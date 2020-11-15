@@ -1,0 +1,1466 @@
+# Introduction to MRP
+
+```{r packages-1, message=FALSE, echo = FALSE, cache=FALSE}
+library(rstanarm)
+library(data.table)
+library(dplyr)
+library(forcats)
+library(tidyr)
+library(reshape2)
+
+library(ggplot2)
+library(scales)
+library(bayesplot)
+library(gridExtra)
+library(ggalt)
+library(usmap)
+
+theme_set(bayesplot::theme_default())
+
+# Improves performance in some systems, but can be removed if it causes problems
+Sys.setenv(LOCAL_CPPFLAGS = '-march=corei7 -mtune=corei7')
+
+# Use all available cores
+options(mc.cores = parallel::detectCores(logical = FALSE))
+```
+
+<style type="text/css">
+h1.title {
+  font-size: 32px;
+  text-align: center;
+}
+
+h2 {
+  padding-bottom: 4px;
+}
+
+h4.author {
+  padding-top: 22px;
+  text-align: center;
+  font-style: italic;
+}
+h4.date {
+  padding-top: 14px;
+  font-size: 14px;
+  text-align: center;
+  font-style: italic;
+  padding-bottom: 20px;
+}
+</style>
+
+<script>
+function myFunction() {
+    var x = document.getElementById("myDIV");
+    if (x.style.display === "none") {
+        x.style.display = "block";
+    } else {
+        x.style.display = "none";
+    }
+}
+function myFunction2() {
+    var x = document.getElementById("myDIV2");
+    if (x.style.display === "none") {
+        x.style.display = "block";
+    } else {
+        x.style.display = "none";
+    }
+}
+function myFunction3() {
+    var x = document.getElementById("myDIV3");
+    if (x.style.display === "none") {
+        x.style.display = "block";
+    } else {
+        x.style.display = "none";
+    }
+}
+</script>
+<style>
+#myDIV {
+  width: 100%;
+  padding: 20px 30px;
+  background-color: rgba(192,192,192,0.15);
+  margin-top: 10px;
+  border-radius: 4px;
+}
+
+#myButton{
+border-color: #008CBA;
+background-color: rgba(192,192,192,0.05);
+color: #008CBA;
+border-radius: 4px;
+}
+
+#myDIV2 {
+  width: 100%;
+  padding: 20px 30px;
+  background-color: rgba(192,192,192,0.15);
+  margin-top: 10px;
+  border-radius: 4px;
+}
+
+#myButton2{
+border-color: #008CBA;
+background-color: rgba(192,192,192,0.05);
+color: #008CBA;
+border-radius: 4px;
+}
+
+#myDIV3 {
+  width: 100%;
+  padding: 20px 30px;
+  background-color: rgba(192,192,192,0.15);
+  margin-top: 10px;
+  border-radius: 4px;
+}
+
+#myButton3{
+border-color: #008CBA;
+background-color: rgba(192,192,192,0.05);
+color: #008CBA;
+border-radius: 4px;
+}
+</style>
+
+
+Multilevel Modeling and Poststratification (MRP) has become widely used in two closely related applications:
+
+1. Small-area estimation: Sub-national surveys are not always available, and even then finding comparable surveys across sub-national units is rare. However, public views at the sub-national level are often central, as many policies are decided by local goverments or sub-national area representatives at national assemblies. MRP allows us to use national surveys to generate reliable estimates of sub-national opinion (@park2004bayesian, @lax2009gay, @lax2009states, @kiewiet2018predicting).
+
+2. Using nonrepresentative surveys: Many surveys face serious difficulties in recruiting representative samples of participants (e.g. because of non-response bias). However, with proper statistical adjustment, nonrepresentative surveys can be used to generate accurate opinion estimates (@wang2015xbox, @downes2018multilevel).
+
+In this case study, we will show how to use MRP to estimate public opinion. In the first section we introduce the data. Then, we describe the two essential stages of MRP: building an individual-response model and using poststratification. That is, first, we take individual responses to national surveys and use multilevel modeling in order to predict opinion estimates based on demographic-geographic subgroups (e.g. middle-aged white female with postgraduate education in California). Secondly, these opinion estimates by subgroups are weighted by the frequency of these subgroups at the (national or subnational) unit of interest. In the fourth section we show how MRP can be used to obtain accurate national estimates from a biased sample. Lastly, the five section introduces some practical considerations.
+
+All the code is also available in the [Rmarkdown file on GitHub](link pending).
+
+## The Data
+
+### Survey data
+
+The first step is to gather raw survey data. These surveys should include some respondent demographic information and some type of geographic indicator (e.g. state, congressional district). In this case, we will use data from the 2018 Cooperative Congressional Election Study (CCES), a US nationwide survey designed by a consortium of 60 research teams and administered by YouGov. The outcome of interestm that we will use for this introduction is required abortion coverage by workplace insurance:
+
+> Allow employers to decline coverage of abortions in insurance plans (Support / Oppose)
+
+Apart from the outcome measure, we will consider a set of factors to define the geographic-demographic subgroups. Even though some of these variables may be continous (e.g. age, income), we must make sure to split them into intervals to create a factor with different levels. Importantly, and as we will see in a moment, these factors and their corresponding levels need to match the ones in the postratification table. In this case, we will use the following demographic-geographic factors with the indicated levels:
+
+* State: 50 US states ($S = 50$).
+* Age: 18-29, 30-39, 40-49, 50-59, 60-69, 70+ ($A = 6$).
+* Gender: Female, Male ($G = 2$).
+* Ethnicity: (Non-hispanic) White, Black, Hispanic, Other (which also includes Mixed) ($R = 4$).
+* Education: No HS, HS, Some college, 4-year college, Post-grad ($E = 5$).
+
+```{r, echo = FALSE, cache=FALSE}
+clean_cces <- function(df, list_states_abb, list_states_num){
+  
+  ## Abortion -- dichotomous (0 - Oppose / 1 - Support)
+  df$abortion <- abs(df$CC18_321d-2)
+  
+  ## State -- factor
+  df$state <- df$inputstate
+  df$state <- factor(df$state, levels = list_states_num, labels = list_states_abb)
+  
+  ## Gender -- dichotomous (coded as -0.5 Female, +0.5 Male)
+  df$male <- abs(df$gender-2)-0.5
+  
+  ## ethnicity -- factor
+  df$eth <- factor(df$race,
+                   levels = 1:8,
+                   labels = c("White", "Black", "Hispanic", "Asian", "Native American", "Mixed", "Other", "Middle Eastern"))
+  df$eth <- fct_collapse(df$eth, "Other" = c("Asian", "Other", "Middle Eastern", "Mixed", "Native American"))
+  
+  ## Age -- cut into factor
+  df$age <- 2018 - df$birthyr
+  df$age <- cut(as.integer(df$age), breaks = c(0, 29, 39, 49, 59, 69, 120), 
+                labels = c("18-29","30-39","40-49","50-59","60-69","70+"),
+                ordered_result = TRUE)
+  
+  ## Education -- factor
+  df$educ <- factor(as.integer(df$educ), 
+                    levels = 1:6, 
+                    labels = c("No HS", "HS", "Some college", "Associates", "4-Year College", "Post-grad"), ordered = TRUE)
+  df$educ <- fct_collapse(df$educ, "Some college" = c("Some college", "Associates"))  
+  
+  # Clean and remove NAs
+  df <- df %>% select(abortion, state, eth, male, age, educ) %>% drop_na()
+  
+}
+```
+
+```{r, results = 'asis', cache=FALSE}
+df_all <- read.csv("cces18_common_vv.csv")
+
+# Vector containing the abbreviated names for the 50 states under consideration
+list_states_abb <- datasets::state.abb
+# FIPS code for the 50 states. The CCES data uses FIPS codes to identify states,
+# and therefore we need these to read the data and transform the FIPS codes
+# to abbreviated names
+list_states_num <- c(1,2,4,5,6,8,9,10,12,13,15,16,17,18,19,20,21,22,23,24,
+                     25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,
+                     44,45,46,47,48,49,50,51,53,54,55,56)
+
+# Preprocessing
+df_all <- clean_cces(df_all, list_states_abb, list_states_num)
+
+# Population and states estimates for all the respondents
+pop_estimate_all <- mean(df_all$abortion)
+state_estimates_all <- df_all %>% group_by(state) %>% summarise(estimate = mean(abortion))
+state_n_all <- df_all %>% group_by(state) %>% summarise(N_all = n())
+```
+
+Details about how we preprocess the CCES data using the `clean_cces()` function can be found in the appendix.
+
+The full 2018 CCES consist of almost 60,000 respondents. However, most studies work with a smaller national survey. To show how MRP works in these cases, we will take a random sample of 10,000 participants of the CCES and work with the sample instead of the full CCES. Obviously, in a more realistic setting we would always use all the data that we have available.
+
+```{r, cache=FALSE}
+# For clarity, we will call the full survey with 60,000 respondents df_all,
+# while the 10,000 person sample will be called df (which stands for data frame).
+
+set.seed(1010) # We set the seed to an arbitrary number for reproducibility.
+df <- df_all %>% sample_n(5000)
+knitr::kable(head(df), format = 'markdown')
+```
+
+### Poststratification table
+
+The poststratification table reflects the number of people in the population of interest that, according to the census, corresponds to each combination of the demographic-geographic factors. It will be used in the second stage to poststratify the estimates obtained for each subgroup. For this, it is central that the factors (and their levels) used in the survey match the factors obtained in the census. Therefore, MRP is in principle limited to use individual-level variables that are present both the survey and the census, although in the next chapter we will relax this requirement. For instance, the CCES includes information on respondent's religion, but as this information is not available in the census we are not able to use this variable. Similarly, the levels of the factors in the census are required to match the ones in the census. For instance, in our case the CCES included 'Middle Eastern' as an option for ethnicity, while the ACS did not include it. Therefore, people who identified as 'Middle Eastern' in the CCES need to be included in the 'Other' category. 
+
+In this case, we will base our poststratification table in the 2014-2018 American Community Survey (ACS), a set of yearly surveys conducted by the US Census that provides estimates of the number of US residents according to a series of variables that include our poststratification variables. As we defined the levels for these variables, the poststratification table must have $50 \times 6 \times 2 \times 4 \times 5 = 12,000$ rows. This means we actually have more rows in the poststratification table than observed units, which necessarily implies that there are some combinations in the poststratification table that we don't observe in the CCES sample.
+
+```{r, cache=FALSE}
+# Load data frame created in the appendix. The data frame that contains the poststratification
+# table is called postrat_df
+postrat_df <- read.csv("postrat_data.csv")
+postrat_df$state <- factor(postrat_df$state, levels = list_states_num, labels = list_states_abb)
+knitr::kable(head(postrat_df), format = 'markdown')
+```
+
+For instance, the first row in the poststratification table indicates that there are 23,948 Alabamians that are white, male, between 18 and 29 years old, and without a high school degree.
+
+Every MRP study requires some degree of data wrangling in order to make the factors in the survey of interest match the factors available in the census. The code shown in the Appendix can be used as a template to download the ACS data and make it match with a given survey of interest.
+
+### Group-level predictors
+
+The individual-response model used in the first stage can include group-level predictors, which tend to reduce unexplained group level variation by accounting for structured differences among the states. For instance, most national-level surveys in the US tend to include many participants from a state such as New York, but few from a small state like Vermont. This can result in noisy estimates for the effect of being from Vermont. The intuition is that by including state-level predictors, such as the Republican voteshare in a previous election or the percentage of Evangelicals at each state, the model is able to account for how similar is Vermont is to New York and other populous states, and therefore to produce more precise estimates. These group-level predictors do not need to be available in the census nor they have to be converted to factors, and in many cases are readily available. A more detailed discussion on the importance of builidng a reasonable model for predicting opinion, and how state-level predictors can be a key element in this regard, can be found in @lax2009states and @buttice2013mrp.
+
+In our example, we will include two state-level predictors: the geographical region (Northeast, North Central, South, and West) and the Republican vote share in the 2016 presidential election.
+
+```{r, warning=FALSE, cache=FALSE}
+# Read statelevel_predictors.csv in a dataframe called statelevel_predictors
+statelevel_predictors <- read.csv('statelevel_predictors.csv')
+
+# Clean factor levels
+statelevel_predictors$state <- factor(statelevel_predictors$state, 
+                                      levels = list_states_abb, labels = list_states_abb)
+```
+
+### Exploratory data analysis
+
+In the previous steps we have obtained a 10,000-person sample from the CCES survey and also generated a poststratification table using census data. As a first exploratory step, we will check if the frequencies for the different levels for the factors considered in the CCES data are similar to the frequencies reported in the census. If this was not the case, we will start suspecting some degree of nonresponse bias in the CCES survey. 
+
+For clarity, the levels in the plots follow their natural order in the case of age and education, ordering the others by the approximate proportion of Republican support.
+
+```{r, fig.width=14, fig.height=3.5, echo=FALSE, fig.align = "center", warning=FALSE, cache=FALSE}
+# Age
+age_sample <- df %>% group_by(age) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+age_post <- postrat_df %>% group_by(age) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+age <- inner_join(age_sample, age_post, by = "age") %>% select(age, Sample, Population)
+age_plot <- ggplot() + 
+  ylab("") + xlab("Proportion") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = age, aes(y = age, x = Sample, xend = Population)) +
+  geom_point(data = melt(age, id = "age"), aes(y = age, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.35), breaks = c(0, .1, .2, .3)) + theme(legend.position = "none") + ggtitle("Age")
+
+# Gender
+male_sample <- df %>% group_by(male) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+male_post <- postrat_df %>% group_by(male) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+male <- inner_join(male_sample, male_post, by = "male") %>% select(male, Sample, Population) %>% 
+  mutate(male = factor(male, levels = c(-0.5, 0.5), labels = c("Female", "Male")))
+male_plot <- ggplot() + 
+  ylab("") + xlab("") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = male, aes(y = male, x = Sample, xend = Population)) +
+  geom_point(data = melt(male, id = "male"), aes(y = male, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.6), breaks = c(0, .2, .4, .6)) + theme(legend.position = "none") + ggtitle("Gender")
+
+# Ethnicity
+ethnicity_sample <- df %>% group_by(eth) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+ethnicity_post <- postrat_df %>% group_by(eth) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+ethnicity <- inner_join(ethnicity_sample, ethnicity_post, by = "eth") %>% select(eth, Sample, Population)
+ethnicity$eth <- factor(ethnicity$eth, 
+                    levels = c("Black", "Hispanic", "Other", "White"),
+                    labels = c("Black", "Hispanic", "Other", "White"))
+ethnicity_plot <- ggplot() + 
+  ylab("") + xlab("") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = ethnicity, aes(y = eth, x = Sample, xend = Population)) +
+  geom_point(data = melt(ethnicity, id = "eth"), aes(y = eth, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.8), breaks = c(0, .2, .4, .6, 0.8)) + theme(legend.position = "none") + ggtitle("Ethnicity")
+
+# Education
+educ_sample <- df %>% group_by(educ) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+educ_post <- postrat_df %>% group_by(educ) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+educ <- inner_join(educ_sample, educ_post, by = "educ") %>% select(educ, Sample, Population)
+educ$educ <- factor(educ$educ, 
+                    levels = c("No HS", "HS", "Some college", "4-Year College", "Post-grad"),
+                    labels = c("No HS", "HS", "Some\nCollege", "4-year\nCollege", "Post-grad"))
+educ_plot <- ggplot() + 
+  ylab("") + xlab("") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = educ, aes(y = educ, x = Sample, xend = Population)) +
+  geom_point(data = melt(educ, id = "educ"), aes(y = educ, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.33), breaks = c(0, .1, .2, .3)) + theme(legend.position = "none") + ggtitle("Education")
+
+grid.arrange(age_plot, male_plot, ethnicity_plot, educ_plot,
+             widths = c(1.5, 0.75, 1.5, 1.5))
+
+```
+
+```{r, fig.width=14, fig.height=3.5, echo=FALSE, fig.align = "center", warning=FALSE, cache=FALSE}
+state_sample <- df %>% group_by(state) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+state_post <- postrat_df %>% group_by(state) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+state <- left_join(state_sample, state_post, by = "state") %>% select(state, Sample, Population) %>% left_join(statelevel_predictors, by = "state")
+states_order <- state$repvote
+state$state <- fct_reorder(state$state, states_order)
+state <- state %>% select(state, Sample, Population)
+
+ggplot() + 
+  ylab("") + xlab("Proportion") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = state, aes(y = state, x = Sample, xend = Population)) +
+  geom_point(data = melt(state, id = "state"), aes(y = state, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.13), breaks = c(0, .025, .05, .075, .1, .125)) + ggtitle("State") + 
+  theme(legend.position = "bottom", legend.title=element_blank())
+```
+
+In the plot below we see that our 10,000-participant CCES sample does not differ too much from the target population according to the American Community Survey. This should not be surprising, as the CCES intends to use a representative sample.
+
+## First stage: Estimating the Individual-Response Model
+
+The first stage is to use a multilevel logistic regression model to predict the outcome measure given the different factors we are considering. Having a plausible model to predict opinion is central for MRP to work well.
+
+The model we use in this example is described below. It includes varying intercepts for age, ethnicity, and state, where the variation for the state intercepts is in turn influenced by the region effects (coded as indicator variables) and the Republican vote share in the 2016 election. As there are only two levels for gender, it is preferable to model it as a predictor for computational efficiency. Additionally, we include varying intercepts for the interaction between male and ethnicity, education and age, and education and ethnicity (see @ghitza2013deep for an in-depth discussion on the advantages of including interactions).
+
+$$
+Pr(y_i = 1) = logit^{-1}(
+\alpha_{\rm s[i]}^{\rm state}
++ \alpha_{\rm a[i]}^{\rm age}
++ \alpha_{\rm r[i]}^{\rm eth}
++ \alpha_{\rm e[i]}^{\rm educ}
++ \beta^{\rm male} \cdot {\rm Male}_{\rm i} 
++ \alpha_{\rm g[i], r[i]}^{\rm male.eth}
++ \alpha_{\rm e[i], a[i]}^{\rm educ.age}
++ \alpha_{\rm e[i], r[i]}^{\rm educ.eth}
+)
+$$
+where:
+
+$$
+\begin{align*}
+\alpha_{\rm s}^{\rm state} &\sim {\rm Normal}(\gamma^0 + \gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma^{\rm state}) \textrm{ for s = 1,...,50}\\
+\alpha_{\rm a}^{\rm age} & \sim {\rm Normal}(0,\sigma^{\rm age}) \textrm{ for a = 1,...,6}\\
+\alpha_{\rm r}^{\rm eth} & \sim {\rm Normal}(0,\sigma^{\rm eth}) \textrm{ for r = 1,...,4}\\
+\alpha_{\rm e}^{\rm educ} & \sim {\rm Normal}(0,\sigma^{\rm educ}) \textrm{ for e = 1,...,5}\\
+\alpha_{\rm g,r}^{\rm male.eth} & \sim {\rm Normal}(0,\sigma^{\rm male.eth}) \textrm{ for g = 1,2 and r = 1,...,4}\\
+\alpha_{\rm e,a}^{\rm educ.age} & \sim {\rm Normal}(0,\sigma^{\rm educ.age}) \textrm{ for e = 1,...,5 and a = 1,...,6}\\
+\alpha_{\rm e,r}^{\rm educ.eth} & \sim {\rm Normal}(0,\sigma^{\rm educ.eth}) \textrm{ for e = 1,...,5 and r = 1,...,4}\\
+\end{align*}
+$$
+
+<button id="myButton" onclick="myFunction()" >Show model explanation </button>
+<div id="myDIV" style="display:none">
+
+People without a background in multilevel modeling may be surprised to see this formulation. Why are we using terms such as $\alpha_{\rm eth}^{\rm eth}$ instead of the much more common method of creating an indicator variable for each state (e.g. $\beta^{\rm white} \cdot {\rm White}_{i} + \beta^{\rm black} \cdot {\rm Black}_{i} + ...$)? The answer is that this approach allows to share information between the levels of each variable (e.g. different ethnicities), preventing levels with less data from being too sensitive to the few observed values. For instance, it could happen that we only surveyed ten Hispanics, and that none of them turned out to agree that employers should be able to decline abortion coverage in insurance plans. Under the typical approach, the model would take this data too seriously and consider that Hispanics necessarily oppose this statement (i.e. $\beta^{\rm hispanic}  =  - \infty$). We know, however, that this is not the case. It may be that Hispanics are less likely to support the statement, but from such a small sample size it is impossible to know. What the multilevel model will do is to partially pool the varying intercept for Hispanics towards the average accross all ethnicities (i.e. in our model, the average across all ethnicities is fixed at zero), making it negative but far from the unrealistic negative infinity. This pooling will be data-dependent, meaning that it will pool the varying intercept towards the average more strongly the smaller the sample size in that level. In fact, if the sample size for a certain level is zero, the estimate varying intercept would be the average coefficient for all the other levels.
+
+* $\alpha_{\rm a}^{\rm age}$: The effect of subject $i$'s age on the probability of supporting the statement.
+
+* $\alpha_{\rm r}^{\rm eth}$: The effect of subject $i$'s ethnicity on the probability of supporting the statement.
+
+* $\alpha_{\rm e}^{\rm educ}$: The effect of subject $i$'s education on the probability of supporting the statement.
+
+* $\alpha_{\rm s}^{\rm state}$: The effect of subject $i$'s state on the probability of supporting the statement. As we have a state-level predictor (the Republican vote share in the 2016 election), we need to build another model in which $\alpha_{\rm s}^{\rm state}$ is the outcome of a linear regression with an expected value determined by an intercept $\gamma^0$, the effect of the region coded as indicator variables (with Northeast as the baseline level), and the effect of the Republican vote share $\gamma^{\rm demvote}$.
+
+* $\beta^{\rm male}$: The average effect of being male on the probability of supporting abortion. We could have used a similar formulation as in the previous cases (i.e. $\alpha_{\rm g}^{\rm gender} \sim N(0, \sigma^{\rm gender})$), but having only two levels (i.e. male and female) can create some estimation problems.
+
+* $\alpha_{\rm e,r}^{\rm male.eth}$ and $\alpha_{\rm e,r}^{\rm educ.age}$: In the survey literature it is common practice to include these two interactions.
+
+* $\alpha_{\rm e,r}^{\rm educ.eth}$: In the next section we will explore public opinion on required abortion coverage at the different levels of education and ethnicity. It is, therefore, a good idea to also include this interaction.
+
+See @gelman2007data for an introduction to multilevel modeling.
+
+</div>
+
+<br>
+
+The `rstanarm` package allows the user to conduct complicated regression analyses in Stan with the simplicity of standard formula notation in R. `stan_glmer()`, the function that allows to fit generalized linear multilevel models, uses the same notation as the `lme4` package (see documentation [here](https://cran.r-project.org/web/packages/lme4/vignettes/lmer.pdf)). That is, we specify the varying intercepts as `(1 | group)` and the interactions are expressed as `(1 | group1:group2)`, where the `:` operator creates a new grouping factor that consists of the combined levels of the two groups (i.e. this is the same as pasting together the levels of both factors). However, this syntax only accepts predictors at the individual level, and thus the two state-level predictors must be expanded to the individual level (see [p.  265-266]@gelman2007data). Notice that:
+
+$$
+\begin{align*}
+\alpha_{\rm s}^{\rm state} &\sim {\rm Normal}(\gamma^0 + \gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma^{\rm state}) \\
+&= \underbrace{\gamma^0}_\text{Intercept} + 
+\underbrace{{\rm Normal}(0, \sigma^{\rm state})}_\text{State varying intercept} + 
+\underbrace{\gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}}_\text{State-level predictors expanded to the individual level}
+\end{align*}
+$$
+
+Consequently, we can then reexpress the model as:
+
+$$
+Pr(y_i = 1) = logit^{-1}(
+\gamma^0
++ \alpha_{\rm s[i]}^{\rm state}
++ \alpha_{\rm a[i]}^{\rm age}
++ \alpha_{\rm r[i]}^{\rm eth}
++ \alpha_{\rm e[i]}^{\rm educ}
++ \beta^{\rm male} \cdot {\rm Male}_{\rm i} 
++ \alpha_{\rm g[i], r[i]}^{\rm male.eth}
++ \alpha_{\rm e[i], a[i]}^{\rm educ.age}
++ \alpha_{\rm e[i], r[i]}^{\rm educ.eth}
++ \gamma^{\rm south} \cdot {\rm South}_{\rm s} \\
++ \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} 
++ \gamma^{\rm west} \cdot {\rm West}_{\rm s} 
++ \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s})
+$$
+
+In the previous version of the model, $\alpha_{\rm s[i]}^{\rm state}$ was informed by several state-level predictors. This reparametrization expands the state-level predictors at the individual level, and thus $\alpha_{\rm s[i]}^{\rm state}$ now represents the variance introduced by the state adjusting for the region and 2016 Republican vote share. Similarly, $\gamma^0$, which previously represented the state-level intercept, now becomes the individual-level intercept. The two parameterizations of the multilevel model are mathematically equivalent, and using one or the other is simply a matter of preference. The former one highlights the role that state-level predictos have in accounting for structured differences among the states, while the later is closer to the `rstanarm` syntax.
+
+```{r, cache=FALSE}
+# Expand state-level predictors  to the individual level
+# df <- left_join(df, statelevel_predictors, by = "state", keep = TRUE)
+# 
+# Fit in stan_glmer
+# fit <- stan_glmer(abortion ~ (1 | state) + (1 | eth) + (1 | educ) + male +
+#                     (1 | male:eth) + (1 | educ:age) + (1 | educ:eth) +
+#                     repvote + factor(region),
+#   family = binomial(link = "logit"),
+#   data = df,
+#   prior = normal(0, 1, autoscale = TRUE),
+#   prior_covariance = decov(scale = 0.50),
+#   adapt_delta = 0.99,
+#   refresh = 0,
+#   seed = 1010)
+# 
+# saveRDS(fit, file = "fit_mrp_1.rds")
+fit <- readRDS("fit_mrp_1.rds")
+```
+
+As a first pass to check whether the model is performing well, we must check that there are no warnings about divergences, failure to converge or tree depth. Fitting the model with the default settings produced a few divergent transitions, and thus we decided to try increasing `adapt_delta` to 0.99 and introducing stronger priors than the `rstanarm` defaults. After doing this, the divergences dissapeared. In the [Computational Issues]() subsection of this case study we provide more details about divergent transitions and potential solutions.
+
+```{r, cache=FALSE}
+print(fit)
+```
+
+<button id="myButton2" onclick="myFunction2()" >Show model interpretation </button>
+<div id="myDIV2" style="display:none">
+
+* `Intercept` ($\gamma^0$): The global intercept corresponds to the expected outcome in the logit scale when having all the predictors equal to zero. In this case, this does not have a clear interpretation, as it is then influenced by the varying intercepts for state, age, ethnicity, education, and interactions. Furthermore, it corresponds to the impractical scenario of someone in a state with zero Republican vote share.
+
+* `male` ($\beta^{\rm male}$): The median estimate for this coefficient is 0.4, with a standard error (measured using the Mean Absolute Deviation) of 0.1. Using the divide-by-four rule (@gelman2020raos, Chapter 13), we see that, adjusting for the other covariates, males present up to a $10\% \pm 2.5\%$ higher probability of supporting the right of employers to decline coverage of abortions relative to females.
+
+* `repvote` ($\gamma^{\rm repvote}$): As the scale of `repvote` was between 0 and 1, this coefficient corresponds to the difference in probability of supporting the statement between someone that was in a state in which no one voted Republican to someone whose state voted all Republican. This is not reasonable, and therefore we start by dividing the median coefficient by 10. Doing this, we consider a difference of a 10% increase in Republican vote share. This means that we expect that someone from a state with a 55% Republican vote share has approximately $\frac{1.5}{10}/4 = 4\%$ ($\pm 1\%$) higher probability of supporting the statement relative to another individual with similar characteristics from a state in which Republicans received 45% of the vote.
+
+* `regionSouth` ($\gamma^{\rm south}$): According to the model, we expect that someone from a state in the south has, adjusting for the other covariates, up to a 0.1/4 = 2.5% ($\pm 2.5\%$) higher probability of supporting the statement relative to someone from the Northeast, which was the baseline category. The interpretation for `regionNorthCentral` and `regionWest` is similar.
+
+* `Error terms` ($\sigma^{\rm state}$, $\sigma^{\rm age}$, $\sigma^{\rm eth}$, $\sigma^{\rm educ}$, $\sigma^{\rm male.eth}$, $\sigma^{\rm educ.age}$, $\sigma^{\rm educ.eth}$): Remember that the intercepts for the different levels of state, age, ethnicity, education, and the specified interactions are distributed following a normal distribution centered at zero and with a standard deviation that is estimated from the data. The `Error terms` section gives us the estimates for these group-level standard deviations. For instance, $\alpha_{\rm r}^{\rm ethnicity} \sim {\rm Normal}(0, \sigma^{\rm ethnicity})$, where the median estimate for $\sigma^{\rm ethnicity}$ is 0.43. In other words, the variyng intercepts for the different ethnicity groups have a standard deviation that is estimated to be 0.43 on the logit scale, or 0.43/4 = 0.11 on the probability scale. In some cases, we may also want to check the intercepts corresponding to the individual levels of a factor. In `rstanarm`, this can be done using `fit$coefficients`. For instance, the median values for the varying intercepts of race are $\alpha^{\rm eth}_{r = {\rm White}}$  = `r round(fit$coefficients["b[(Intercept) eth:White]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Black}}$ = `r round(fit$coefficients["b[(Intercept) eth:Black]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Hispanic}}$ = `r round(fit$coefficients["b[(Intercept) eth:Hispanic]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Other}}$ = `r round(fit$coefficients["b[(Intercept) eth:Other]"], 2)`.
+
+</div>
+
+<br>
+
+## Second Stage: Poststratification
+
+### Estimation at the national level
+
+Currently, all we have achieved is a model that predicts support on the option for declining abortion coverage given a number of factor-type predictors. To go from this model to a national or sub-national estimate, we need to weight the model predictions for the different subgroups by the actual frequency of these subgroups. This idea can be expressed as:
+
+$$
+\theta^{MRP} = \frac{\sum N_{\rm subgroup} \theta_{\rm subgroup}}{\sum N_{\rm subgroup}}
+$$
+
+where $\theta^{MRP}$ is the MRP estimate, $\theta_{\rm subgroup}$ corresponds to the model estimate for a specific subgroup (e.g. young Hispanic men with a High School diploma in Arkansas), and $N_{\rm subgroup}$ corresponds to the number of people in that subgroup according to the ACS. For a more in-depth review of poststratification, see Chapter 13 of @gelman2020raos.
+
+The values of $\theta_{subgroup}$ for the different subgroups can be obtained with the `posterior_epred()` function. Of course, as `stan_glmer()` performs Bayesian inference, $\theta_{subgroup}$ for any given subgroup will not be a single point estimate but a vector of posterior draws.
+
+```{r, message=FALSE, cache=FALSE}
+# Expand state level predictors  to the individual level
+postrat_df <- left_join(postrat_df, statelevel_predictors, by = "state", keep = TRUE)
+
+# posterior_epred returns the posterior estimates for the different subgroups stored in the postrat_df
+# dataframe. 
+P <- posterior_epred(fit, newdata = postrat_df, draws = 1000)
+mrp_estimates <- P %*% postrat_df$n / sum(postrat_df$n)
+model_popn_pref <- c(mean = mean(mrp_estimates), sd = sd(mrp_estimates))
+print(round(model_popn_pref, 2))
+```
+
+<button id="myButton3" onclick="myFunction3()" > Show code explanation </button>
+<div id="myDIV3" style="display:none">
+ 
+`posterior_epred()` returns a matrix $P$ with $D$ rows and $J$ columns, where $D$ corresponds to the number of draws from the posterior distribution (in this case 1000, as we specified `draws = 1000`) and $J$ is the number of subgroups in the poststratification table (i.e. 12,000). This matrix is multiplied by a vector $k$ of length $J$ that contains the number of people in each subgroup of the poststratification table. This results in a vector of length $D$ that is then divided by the total number of people considered in the poststratification table, a scalar which is calculated by adding all the values in $k$. 
+
+$$\theta^{MRP} = \frac{P \times k}{\sum_j^J k_j}$$
+
+The end result is a vector that we call $\theta^{MRP}$, and which contains $D$ estimates for the national-level statement support.
+
+</div>
+
+<br>
+
+We can compare these results to the 10,000-person unadjusted sample estimate:
+
+```{r, message=FALSE, cache=FALSE}
+sample_popn_pref <- c(mean = mean(df$abortion), se = sqrt(mean(df$abortion)*(1-mean(df$abortion))/nrow(df)))
+print(round(sample_popn_pref, 2))
+```
+
+Additionally, we can compare with the population support estimated by the full survey that included the almost 60,000 participants:
+
+```{r, message=FALSE, cache=FALSE}
+all_popn_pref <- c(mean = mean(df_all$abortion), se = sqrt(mean(df_all$abortion)*(1-mean(df_all$abortion))/nrow(df_all)))
+round(all_popn_pref, 2)
+```
+
+In general, we see that both the unadjusted sample estimate and the MRP estimate are quite close to the results of the full survey. In other words, MRP is not providing a notable advantage against the unadjusted sample national estimates. However, it is important to clarify that we were somewhat lucky in obtaining this result as a product of using data from the CCES, a high quality survey that intends to be representative (and appears to be, at least with respect to the variables considered in our poststratification table). Many real-world surveys are not as representative relative to the variables considered in the poststratification step, and in these cases MRP will help correcting the biased estimates from the unadjusted survey. We will see an example of this in section 4, where we exemplify how MRP adjusts a clearly biased sample.
+
+### Estimation for sub-national units
+
+As we mentioned, small area estimation is one of the main applications of MRP. In this case, we will get an estimate of the support for employer's right to decline coverage of abortions per state:
+
+$$
+y_{\rm state}^{MRP} = \frac{\sum_{\rm subgroup \in state} N_{\rm subgroup} \theta_{\rm subgroup}}{\sum_{\rm subgroup \in state} N_{\rm subgroup}}
+$$
+
+```{r, message=FALSE, message=FALSE, cache=FALSE}
+# Create empty dataframe
+state_df <- data.frame(
+  state_num = list_states_num,
+  state = list_states_abb,
+  model_state_pref = rep(NA, length(list_states_num)),
+  model_state_sd = rep(NA, length(list_states_num)),
+  sample_state_pref = rep(NA, length(list_states_num)),
+  all_state_pref = rep(NA, length(list_states_num)),
+  N = rep(NA, length(list_states_num)),
+  N_all = rep(NA, length(list_states_num))
+)
+
+state_estimates_all$statename <- list_states_abb
+
+# Loop to populate the dataframe
+for(i in 1:length(levels(postrat_df$state))) {
+  # Currently, the matrix P and the poststratification table contain 12,000
+  # rows. We need to filter the ones that correspond to state i for each
+  # iteration of the loop. We do so defining the following condition:
+  filtering_condition <- which(postrat_df$state == state_df$state[i])
+  
+  # Filtering matrix P with filtering_condition
+  P_filtered <- P[ ,filtering_condition]
+  
+  # Filtering poststratification table with filtering_condition
+  k_filtered <- postrat_df[filtering_condition, ]$n
+
+  # Poststratification step
+  poststrat_prob_state <- P_filtered %*% k_filtered / sum(k_filtered)
+  
+  # This is the MRP estimate for the state
+  state_df$model_state_pref[i] <- mean(poststrat_prob_state)
+  state_df$model_state_sd[i] <- sd(poststrat_prob_state)
+  
+  # This is the 10,000 sample survey estimate for the state, this time filtering df
+  state_df$sample_state_pref[i] <- mean(df$abortion[df$state == list_states_abb[i]])
+  
+  # This is the 60000-person survey estimate for the state
+  state_df$all_state_pref[i] <- state_estimates_all$estimate[state_estimates_all$statename == list_states_abb[i]]
+  
+  # Sample size in state i for the 10,000 sample survey
+  state_df$N[i] <- nrow(df[df$state == list_states_abb[i], ])
+  
+  # Sample size in state i for the full 60,000 survey
+  state_df$N_all[i] <- state_n_all$N_all[state_n_all$state==list_states_abb[i]]
+}
+
+state_df$state <- fct_reorder(state_df$state, states_order)
+```
+
+We start visualizing the estimates by state from the unadjusted 10,000-person sample. Again, the states are ordered by Republican vote in the 2016 election, and therefore we expect that statement support will follow an increasing trend.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=10, fig.align = "center"}
+compare1 <- ggplot(data=state_df) +
+  geom_point(aes(x=state, y=sample_state_pref), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=sample_state_pref - 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    ymax=sample_state_pref + 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0)) +
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw() +
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = state_df)+
+  geom_point(aes(y=sample_popn_pref[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data=state_df, aes(y = sample_popn_pref[1], 
+                x = .25,
+                ymin = sample_popn_pref[1] - 2*sample_popn_pref[2],
+                ymax = sample_popn_pref[1] + 2*sample_popn_pref[2]),
+                width = 0, color = "#E37B1C") +
+  geom_text(data = data.frame(), aes(x = Inf, y = sample_popn_pref[1] + 0.06, label = "Unadjusted Sample"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+In states with small samples, we see considerably wide 95\% confidence intervals. We can add the MRP-adjusted estimates to this plot.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=10, fig.align = "center"}
+compare1 <- ggplot(data=state_df) +
+  geom_point(aes(x=state, y=sample_state_pref), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=sample_state_pref - 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    ymax=sample_state_pref + 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=state_df, aes(x=state, y=model_state_pref), color = "#7B1CE3") +
+  geom_errorbar(data=state_df, aes(ymin=model_state_pref - 2*model_state_sd, 
+                                   ymax=model_state_pref + 2*model_state_sd, 
+                                   x=state), alpha=.5, width = 0, color = "#7B1CE3") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = state_df)+
+  geom_point(aes(y=sample_popn_pref[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data=state_df, aes(y = sample_popn_pref[1], 
+                x = .25,
+                ymin = sample_popn_pref[1] - 2*sample_popn_pref[2],
+                ymax = sample_popn_pref[1] + 2*sample_popn_pref[2]),
+                width = 0, color = "#E37B1C") +
+  geom_text(data = data.frame(), aes(x = Inf, y = sample_popn_pref[1]+0.06, label = "Unadjusted Sample"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = model_popn_pref[1], x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = model_popn_pref[1], 
+                x = .75, 
+                ymin = model_popn_pref[1] - 2*model_popn_pref[2],
+                ymax = model_popn_pref[1] + 2*model_popn_pref[2]),
+                width = 0, color = "#7B1CE3") +
+  geom_text(data = data.frame(), aes(x = Inf, y = model_popn_pref[1]+.0, label = "Sample with MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+In general, MRP produces less extreme values by partially pooling information across the factor levels. To illustrate this, we can compare the sample and MRP estimates with the results form the full 60,000-respondent CCES. Of course, in any applied situation we would be using the full survey, but as we took a 10,000 person sample the full 60,000-respondent survey serves as a reference point.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=10, fig.align = "center", results = 'hide'}
+compare1 <- ggplot(data=state_df) +
+  geom_point(aes(x=state, y=sample_state_pref), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=sample_state_pref - 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    ymax=sample_state_pref + 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=state_df, aes(x=state, y=model_state_pref), color = "#7B1CE3") +
+  geom_errorbar(data=state_df, aes(ymin=model_state_pref - 2*model_state_sd, 
+                                   ymax=model_state_pref + 2*model_state_sd, 
+                                   x=state), alpha=.5, width = 0, color = "#7B1CE3") +
+  geom_point(aes(x=state, y=all_state_pref), color = "#1CE37B") +
+  geom_errorbar(data=state_df, aes(ymin=all_state_pref - 2*sqrt((all_state_pref*(1-all_state_pref))/N_all), 
+                                   ymax=all_state_pref - 2*sqrt((all_state_pref*(1-all_state_pref))/N_all), 
+                                   x=state), alpha=.5, width = 0, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = state_df)+
+  geom_point(aes(y=sample_popn_pref[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data=state_df, aes(y = sample_popn_pref[1], 
+                x = .25,
+                ymin = sample_popn_pref[1] - 2*sample_popn_pref[2],
+                ymax = sample_popn_pref[1] + 2*sample_popn_pref[2]),
+                width = 0, color = "#E37B1C") +
+  geom_text(data = data.frame(), aes(x = Inf, y = sample_popn_pref[1]+0.06, label = "Unadjusted Sample"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = model_popn_pref[1], x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = model_popn_pref[1], 
+                x = .75, 
+                ymin = model_popn_pref[1] - 2*model_popn_pref[2],
+                ymax = model_popn_pref[1] + 2*model_popn_pref[2]),
+                width = 0, color = "#7B1CE3") +
+  geom_text(data = data.frame(), aes(x = Inf, y = model_popn_pref[1]-0, label = "Sample with MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  geom_point(aes(y=pop_estimate_all, x = .5), color = "#1CE37B") +
+  geom_errorbar(aes(y = model_popn_pref[1], 
+                x = .5, 
+                ymin = all_popn_pref[1] - 2*all_popn_pref[2],
+                ymax = all_popn_pref[1] + 2*all_popn_pref[2]),
+                width = 0, color = "#1CE37B") +
+  geom_text(data = data.frame(), aes(x = Inf, y = pop_estimate_all-0.06, label = "Complete Survey"), 
+            hjust = -.06, size = 4, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+Overall, the MRP estimates are closer to the full survey estimates. This is particularly clear for the states with a smaller sample size.
+
+As a final way of presenting the MRP estimates, we can plot them on a US map. The symmetric color range goes from 10% to 90% support, as this scale allows for comparison with the other maps. However, the MRP estimates for statement support are concentrated in a relatively small range, which makes the colors appear muted.
+
+```{r, fig.height=4, fig.width=6, echo=FALSE, warning=FALSE, message=FALSE, fig.align = "center"}
+library(usmap)
+
+states_map <- us_map(regions = "states")
+state_df_melted <- state_df %>% select(state, model_state_pref)
+states_map  <- left_join(states_map, state_df_melted, by = c("abbr" = "state")) %>% drop_na()
+
+ggplot(states_map, aes(x = x, y = y, group = group)) +
+  geom_polygon(colour = "lightgray") +
+  geom_polygon(aes(fill = model_state_pref)) + theme_void() +
+  scale_fill_gradient2(midpoint = 0.5, limits = c(0.1, .9), breaks = c(.1, .5, .9),
+                       name = "Support", low = muted("blue"), high = muted("red")) + 
+  theme(legend.margin=margin(l = 0.5, unit='cm'))
+
+```
+
+### Estimation for subgroups within sub-national units
+
+MRP can also be used to obtain estimates for more complex cases, such as subgroups within states. For instance, we can study support for declining coverage of abortions by state and ethnicity within state. For clarity, we order the races according to their support for the statement.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, cache=FALSE}
+# Create dataframe for all combinations of state and ethnicity
+state_df <- df %>% expand(state, eth) %>%
+  mutate(model_mean = NA,
+         model_sd = NA)
+
+# Preprocessing of postrat_df
+postrat_df$educ <- factor(postrat_df$educ, levels = c("No HS", "HS", "Some college", "4-Year College", "Post-grad"), ordered = TRUE)
+
+# Loop to populate the dataframe
+for(i in 1:nrow(state_df)) {
+
+  # Filtering and poststratification
+  filtering_condition <- which(postrat_df$state == state_df$state[i] & 
+                                 postrat_df$eth == state_df$eth[i])
+  P_filtered <- P[, filtering_condition]
+  k_filtered <- postrat_df[filtering_condition, ]$n
+  poststrat_prob_state <- P_filtered %*% k_filtered / sum(k_filtered)
+  
+  # Estimates for MRP
+  state_df$model_mean[i] <- mean(poststrat_prob_state)
+  state_df$model_sd[i] <- sd(poststrat_prob_state)
+
+}
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, cache=FALSE, fig.height=8, fig.width=4, fig.align = "center"}
+states_map <- us_map(regions = "states")
+state_df_melted <- state_df %>% select(state, model_mean, eth)
+states_map  <- left_join(states_map, state_df_melted, by = c("abbr" = "state")) %>% drop_na()
+
+states_map$eth <- factor(states_map$eth, 
+                               levels = c("Black", "Hispanic", "Other", "White"),
+                               labels = c("Black", "Hispanic", "Other", "White"))
+
+ggplot(states_map, aes(x = x, y = y, group = group)) +
+  geom_polygon(colour = "lightgray") +
+  geom_polygon(aes(fill = model_mean)) + theme_void() + facet_grid(rows = vars(eth)) + 
+  scale_fill_gradient2(midpoint = 0.5, limits = c(0.1, .9), breaks = c(.1, .5, .9),
+                       name = "Support", low = muted("blue"), high = muted("red")) + 
+  theme(legend.margin=margin(l = 0.5, unit='cm'))
+
+```
+
+Similarly, we can look at the outcome in ethnicity-education subgroups by state.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Create dataframe for all combinations of state, ethnicity, and educ
+state_df <- df %>% expand(state, eth, educ) %>%
+  mutate(model_mean = NA,
+         model_sd = NA)
+
+
+# Preprocessing of postrat_df
+postrat_df$educ <- factor(postrat_df$educ, levels = c("No HS", "HS", "Some college", "4-Year College", "Post-grad"), ordered = TRUE)
+
+# Loop to populate the dataframe
+for(i in 1:nrow(state_df)) {
+  poststrat_state <- filter(postrat_df,
+                            state == state_df$state[i] & 
+                            eth == state_df$eth[i] & 
+                            educ == state_df$educ[i])
+  
+  # Filtering and poststratification
+  filtering_condition <- which(postrat_df$state == state_df$state[i] & 
+                                 postrat_df$eth == state_df$eth[i] & 
+                                 postrat_df$educ == state_df$educ[i])
+  P_filtered <- P[, filtering_condition]
+  k_filtered <- postrat_df[filtering_condition, ]$n
+  poststrat_prob_state <- P_filtered %*% k_filtered / sum(k_filtered)
+  
+  # Estimates for MRP
+  state_df$model_mean[i] <- mean(poststrat_prob_state)
+  state_df$model_sd[i] <- sd(poststrat_prob_state)
+}
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, cache=FALSE, fig.height=8, fig.width=14}
+states_map <- us_map(regions = "states")
+state_df_melted <- state_df %>% select(state, model_mean, eth, educ)
+states_map  <- left_join(states_map, state_df_melted, by = c("abbr" = "state")) %>% drop_na()
+
+states_map$eth <- factor(states_map$eth, 
+                               levels = c("Black", "Hispanic", "Other", "White"),
+                               labels = c("Black", "Hispanic", "Other", "White"))
+
+ggplot(states_map, aes(x = x, y = y, group = group)) +
+  geom_polygon(colour = "lightgray") +
+  geom_polygon(aes(fill = model_mean)) + theme_void() + facet_grid(vars(eth), vars(educ)) + 
+  scale_fill_gradient2(midpoint = 0.5, limits = c(0.1, .9), breaks = c(.1, .5, .9),
+                       name = "Support", low = muted("blue"), high = muted("red")) + 
+  theme(legend.margin=margin(l = 0.5, unit='cm'))
+
+```
+
+## Adjusting for Nonrepresentative Surveys
+
+We have already introduced that MRP is an effective statistical adjustment method to correct for differences between the sample and target population for a set of key variables. We start this second example by obtaining an artificially nonrepresentative sample that gives more weight to respondents that are older, male, and from Republican states.
+
+```{r, warning=FALSE}
+set.seed(1010)
+
+# We add the state-level predictors to df_all
+df_all <- left_join(df_all, statelevel_predictors, by = "state", keep = TRUE)
+
+# We take a sample from df_all giving extra weight to respondents that re older, male, and from Republican states.
+df <- df_all %>% sample_n(5000, weight = I(5*repvote + (age=="18-29")*0.5 + (age=="30-39")*1 + 
+                                           (age=="40-49")*2 + (age=="50-59")*4 + 
+                                           (age=="60-69")*6 + (age=="70+")*8 + (male==1)*20 + 
+                                           (eth=="White")*1.05))
+
+df$state <- factor(df$state, levels = list_states_abb, labels = list_states_abb)
+```
+
+```{r, fig.width=14, fig.height=3.5, echo=FALSE, fig.align = "center", warning=FALSE, cache=FALSE}
+# Age
+age_sample <- df %>% group_by(age) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+age_post <- postrat_df %>% group_by(age) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+age <- inner_join(age_sample, age_post, by = "age") %>% select(age, Sample, Population)
+age_plot <- ggplot() + 
+  ylab("") + xlab("Proportion") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = age, aes(y = age, x = Sample, xend = Population)) +
+  geom_point(data = melt(age, id = "age"), aes(y = age, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.35), breaks = c(0, .1, .2, .3)) + theme(legend.position = "none") + ggtitle("Age")
+
+# Gender
+male_sample <- df %>% group_by(male) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+male_post <- postrat_df %>% group_by(male) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+male <- inner_join(male_sample, male_post, by = "male") %>% select(male, Sample, Population) %>% 
+  mutate(male = factor(male, levels = c(-0.5, +0.5), labels = c("Female", "Male")))
+male_plot <- ggplot() + 
+  ylab("") + xlab("") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = male, aes(y = male, x = Sample, xend = Population)) +
+  geom_point(data = melt(male, id = "male"), aes(y = male, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.6), breaks = c(0, .2, .4, .6)) + theme(legend.position = "none") + ggtitle("Gender")
+
+# Ethnicity
+ethnicity_sample <- df %>% group_by(eth) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+ethnicity_post <- postrat_df %>% group_by(eth) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+ethnicity <- inner_join(ethnicity_sample, ethnicity_post, by = "eth") %>% select(eth, Sample, Population)
+ethnicity$eth <- factor(ethnicity$eth, 
+                    levels = c("Black", "Hispanic", "Other", "White"),
+                    labels = c("Black", "Hispanic", "Other", "White"))
+ethnicity_plot <- ggplot() + 
+  ylab("") + xlab("") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = ethnicity, aes(y = eth, x = Sample, xend = Population)) +
+  geom_point(data = melt(ethnicity, id = "eth"), aes(y = eth, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.9), breaks = c(0, .2, .4, .6, 0.8)) + theme(legend.position = "none") + ggtitle("Ethnicity")
+
+# Education
+educ_sample <- df %>% group_by(educ) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+educ_post <- postrat_df %>% group_by(educ) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+educ <- inner_join(educ_sample, educ_post, by = "educ") %>% select(educ, Sample, Population)
+educ$educ <- factor(educ$educ, 
+                    levels = c("No HS", "HS", "Some college", "4-Year College", "Post-grad"),
+                    labels = c("No HS", "HS", "Some\nCollege", "4-year\nCollege", "Post-grad"))
+educ_plot <- ggplot() + 
+  ylab("") + xlab("") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = educ, aes(y = educ, x = Sample, xend = Population)) +
+  geom_point(data = melt(educ, id = "educ"), aes(y = educ, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.33), breaks = c(0, .1, .2, .3)) + theme(legend.position = "none") + ggtitle("Education")
+
+grid.arrange(age_plot, male_plot, ethnicity_plot, educ_plot,
+             widths = c(1.5, 0.75, 1.5, 1.5))
+```
+
+```{r, fig.width=14, fig.height=3.5, echo=FALSE, fig.align = "center", warning=FALSE}
+state_sample <- df %>% group_by(state) %>% summarise(n = n()) %>% mutate(Sample = n/sum(n))
+state_post <- postrat_df %>% group_by(state) %>% summarise(n_post = sum(n)) %>% mutate(Population = n_post/sum(n_post))
+state <- full_join(state_sample, state_post, by = "state") %>% select(state, Sample, Population)
+
+state$state <- fct_reorder(state$state, states_order)
+
+ggplot() + 
+  ylab("") + xlab("Proportion") + theme_bw() + coord_flip()  + 
+  geom_dumbbell(data = state, aes(y = state, x = Sample, xend = Population)) +
+  geom_point(data = melt(state, id = "state"), aes(y = state, x = value, color = variable), size = 2) +
+  scale_x_continuous(limits = c(0, 0.13), breaks = c(0, .025, .05, .075, .1, .125)) + ggtitle("State") + 
+  theme(legend.position = "bottom", legend.title=element_blank())
+
+
+```
+
+```{r, cache = TRUE, echo = FALSE}
+# fit <- stan_glmer(abortion ~ (1 | state) + (1 | eth) + (1 | educ) + (1 | age) + male +
+#                     (1 | male:eth) + (1 | educ:age) + (1 | educ:eth) +
+#                     repvote + factor(region),
+#   family = binomial(link = "logit"),
+#   data = df,
+#   prior = normal(0, 1, autoscale = TRUE),
+#   prior_covariance = decov(scale = 0.50),
+#   adapt_delta = 0.99,
+#   refresh = 0,
+#   seed = 1010)
+# saveRDS(fit, file = "fit_mrp_2.rds")
+fit <- readRDS("fit_mrp_2.rds")
+```
+
+```{r, cache = TRUE, echo = FALSE, warning=FALSE, message=FALSE}
+# National
+posterior_prob <- posterior_epred(fit, newdata = postrat_df, draws = 100)
+poststrat_prob <- posterior_prob %*% postrat_df$n / sum(postrat_df$n)
+model_popn_pref <- c(mean = mean(poststrat_prob), sd = sd(poststrat_prob))
+sample_popn_pref <- c(mean = mean(df$abortion), se = sqrt(mean(df$abortion)*(1-mean(df$abortion))/nrow(df)))
+all_popn_pref <- c(mean = mean(df_all$abortion), se = sqrt(mean(df_all$abortion)*(1-mean(df_all$abortion))/nrow(df_all)))
+
+# Create empty dataframe
+state_df <- data.frame(
+  state_num = list_states_num,
+  state = list_states_abb,
+  model_state_pref = rep(NA, length(list_states_num)),
+  model_state_sd = rep(NA, length(list_states_num)),
+  sample_state_pref = rep(NA, length(list_states_num)),
+  all_state_pref = rep(NA, length(list_states_num)),
+  N = rep(NA, length(list_states_num)),
+  N_all = rep(NA, length(list_states_num))
+)
+
+state_estimates_all$statename <- list_states_abb
+
+# By state
+for(i in 1:length(levels(postrat_df$state))) {
+  filtering_condition <- which(postrat_df$state == state_df$state[i])
+  P_filtered <- P[ ,filtering_condition]
+  k_filtered <- postrat_df[filtering_condition, ]$n
+  poststrat_prob_state <- P_filtered %*% k_filtered / sum(k_filtered)
+  
+  state_df$model_state_pref[i] <- mean(poststrat_prob_state)
+  state_df$model_state_sd[i] <- sd(poststrat_prob_state)
+  
+  state_df$sample_state_pref[i] <- mean(df$abortion[df$state == list_states_abb[i]])
+  
+  state_df$all_state_pref[i] <- state_estimates_all$estimate[state_estimates_all$statename == list_states_abb[i]]
+  
+  state_df$N[i] <- nrow(df[df$state == list_states_abb[i], ])
+  
+  state_df$N_all[i] <- state_n_all$N_all[state_n_all$state==list_states_abb[i]]
+}
+
+state_df$state <- fct_reorder(state_df$state, states_order)
+```
+
+As expected, our remarkably nonrepresentative sample produces estimates that are lower than what we obtained by using a random sample in the previous section.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=10, fig.align = "center", cache=FALSE}
+compare1 <- ggplot(data=state_df) +
+  geom_point(aes(x=state, y=sample_state_pref), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=sample_state_pref - 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    ymax=sample_state_pref + 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0)) +
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw() +
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = state_df)+
+  geom_point(aes(y=sample_popn_pref[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data=state_df, aes(y = sample_popn_pref[1], 
+                x = .25,
+                ymin = sample_popn_pref[1] - 2*sample_popn_pref[2],
+                ymax = sample_popn_pref[1] + 2*sample_popn_pref[2]),
+                width = 0, color = "#E37B1C") +
+  geom_text(data = data.frame(), aes(x = Inf, y = sample_popn_pref[1] + 0.06, label = "Unadjusted Sample"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+MRP seems to partially correct for the nonrepresentative sample:
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=10, fig.align = "center", cache=FALSE}
+compare1 <- ggplot(data=state_df) +
+  geom_point(aes(x=state, y=sample_state_pref), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=sample_state_pref - 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    ymax=sample_state_pref + 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=state_df, aes(x=state, y=model_state_pref), color = "#7B1CE3") +
+  geom_errorbar(data=state_df, aes(ymin=model_state_pref - 2*model_state_sd, 
+                                   ymax=model_state_pref + 2*model_state_sd, 
+                                   x=state), alpha=.5, width = 0, color = "#7B1CE3") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = state_df)+
+  geom_point(aes(y=sample_popn_pref[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data=state_df, aes(y = sample_popn_pref[1], 
+                x = .25,
+                ymin = sample_popn_pref[1] - 2*sample_popn_pref[2],
+                ymax = sample_popn_pref[1] + 2*sample_popn_pref[2]),
+                width = 0, color = "#E37B1C") +
+  geom_text(data = data.frame(), aes(x = Inf, y = sample_popn_pref[1]+0.06, label = "Unadjusted Sample"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = model_popn_pref[1], x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = model_popn_pref[1], 
+                x = .75, 
+                ymin = model_popn_pref[1] - 2*model_popn_pref[2],
+                ymax = model_popn_pref[1] + 2*model_popn_pref[2]),
+                width = 0, color = "#7B1CE3") +
+  geom_text(data = data.frame(), aes(x = Inf, y = model_popn_pref[1]+.0, label = "Sample with MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+Lastly, we see how the MRP national and sub-national estimates based on the nonrepresentative sample are, overall, much closer to the 60,000-person survey than the biased unadjusted sample estimates.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=10, fig.align = "center", results = 'hide', cache=FALSE}
+compare1 <- ggplot(data=state_df) +
+  geom_point(aes(x=state, y=sample_state_pref), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=sample_state_pref - 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    ymax=sample_state_pref + 2*sqrt((sample_state_pref*(1-sample_state_pref))/N),
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=state_df, aes(x=state, y=model_state_pref), color = "#7B1CE3") +
+  geom_errorbar(data=state_df, aes(ymin=model_state_pref - 2*model_state_sd, 
+                                   ymax=model_state_pref + 2*model_state_sd, 
+                                   x=state), alpha=.5, width = 0, color = "#7B1CE3") +
+  geom_point(aes(x=state, y=all_state_pref), color = "#1CE37B") +
+  geom_errorbar(data=state_df, aes(ymin=all_state_pref - 2*sqrt((all_state_pref*(1-all_state_pref))/N_all), 
+                                   ymax=all_state_pref - 2*sqrt((all_state_pref*(1-all_state_pref))/N_all), 
+                                   x=state), alpha=.5, width = 0, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = state_df)+
+  geom_point(aes(y=sample_popn_pref[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data=state_df, aes(y = sample_popn_pref[1], 
+                x = .25,
+                ymin = sample_popn_pref[1] - 2*sample_popn_pref[2],
+                ymax = sample_popn_pref[1] + 2*sample_popn_pref[2]),
+                width = 0, color = "#E37B1C") +
+  geom_text(data = data.frame(), aes(x = Inf, y = sample_popn_pref[1]+0.06, label = "Unadjusted Sample"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = model_popn_pref[1], x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = model_popn_pref[1], 
+                x = .75, 
+                ymin = model_popn_pref[1] - 2*model_popn_pref[2],
+                ymax = model_popn_pref[1] + 2*model_popn_pref[2]),
+                width = 0, color = "#7B1CE3") +
+  geom_text(data = data.frame(), aes(x = Inf, y = model_popn_pref[1]-0, label = "Sample with MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  geom_point(aes(y=pop_estimate_all, x = .5), color = "#1CE37B") +
+  geom_errorbar(aes(y = model_popn_pref[1], 
+                x = .5, 
+                ymin = all_popn_pref[1] - 2*all_popn_pref[2],
+                ymax = all_popn_pref[1] + 2*all_popn_pref[2]),
+                width = 0, color = "#1CE37B") +
+  geom_text(data = data.frame(), aes(x = Inf, y = pop_estimate_all-0.06, label = "Complete Survey"), 
+            hjust = -.06, size = 4, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+
+## Practical Considerations
+
+### Census incompletness and uncertainty
+
+There are two main problems we can encounter when dealing with census data. 
+
+* It is possible that some variables that we may want to use for poststratification are not available. For instance, party ID is not registered in the US census and ethnicity is not registered in the French census. This additional information can be included in the poststratification table based on other (generally smaller) surveys that contain these variables.
+
+* A great number of factors may require a large poststratification table, which in turn can result in unreliable census estimates. The American Community Survey we use in this case study does not only provide estimates of the actual figures that would have been obtained if the entire population was sampled, it also includes a measure of uncertainty around these estimates. Ideally, this uncertainty should be taken into account in the poststratification. For simplicity, this introduction has skipped this step, but this could mean the MRP-based estimates present an underestimated uncertainty. 
+
+### Nonreponse and missing data
+
+We have seen that MRP is a method that can mitigate potential biases in the sample, but it is not a substitute for a better data collection effort that tries to minimize systematic nonresponse patterns.
+
+### Model complexity
+
+MRP depends upon the use of a regularized model (i.e. that prevents overfitting by controlling its complexity). Different approaches can be used for this goal (e.g. non-multilevel regression, random forests, or a neural network; see @bisbee2019barp for an implementation that uses Bayesian Additive Regression Trees), but there are several advantages of using a Bayesian multilevel model. First, the multilevel structure allows for partially pooling information across different levels of a factor, which can be crucial when dealing with certain levels with few samples. Second, the Bayesian approach propagates uncertainty across the modeling, and thus gives more realistic confidence intervals.
+
+Apart from selecting the factors included in the poststratification table, there are several decisions the modeler should make. As we have already mentioned, adding relevant state-level predictors to the model often improves results, particularly when we have few data about some states. The inclusion of interactions can also be benefitial, especially when studying subgroups within subgroups (e.g. demographic subgroups within states; @ghitza2013deep). Lastly, the use of structured priors can also serve to reduce both bias and variance by sharing information across the levels of a factor (@gao2020structuredpriors).
+
+### Empty cells in the poststratification table
+
+It is very frequent that some of the cells in the poststratification table are empty, meaning that there are not anyone that fulfills some specific combination of factors. For instance, in a small state there can be no people younger than 30, without a high school degree, and earning more than $500,000 a year. In our example, we made sure that all the cells in the poststratification table were present even if the weight of that cell was zero, but this was only for illustrative purposes.
+
+### Subnational units not represented in the survey
+
+It is fairly common for small-sample surveys not to include anyone from a particular subnational unit. For instance, a small national survey in the US may not include any participant from Wyoming. An important advantage of MRP is that we can still produce estimates for this state using the information from the participants in other states. Going back to the first parametrization of the multilevel model that we presented, $\alpha^{\rm state}_{\rm s = Wyoming}$ will be calculated based on the region and Republican voteshare of the 2016 -- even in the abscence of information about the effect of residing in Wyoming specifically. As we have already explained, including subnational-level predictors is always recommended, particularly considering that data at the subnational level is easy to obtain in many cases. However, when dealing with subnational units that are not represented in our survey these predictors become even more central, as they are able to capture structured differences among the states and therefore allow for more precise estimation in the missing subnational areas.
+
+### Computational issues
+
+Stan uses Hamiltonian Monte Carlo to explore the posterior distribution. In some cases, the geometry of the posterior distribution is too complex, making the Hamiltonian Monte Carlo "diverge". This produces a warning indicating the presence of divergent transitions after warmup, something that implies the model could present biased estimates (see @betancourt2017hmc for more details). Usually, a few divergent transitions do not indicate a serious problem. There are, in any case, three potential solutions to this problem that do not involve reformulating the model: (i) a non-centered parametization; (ii) increasing the `adapt_delta` parameter; and (iii) including stronger priors. Fortunately we don't have to worry about (i), as `rstanarm` already provides a non-centered parametization for the model. Therefore, we can focus on the other two.
+
+1.  Exploring the posterior distribution is somewhat similar as cartographing a mountainous terrain, and a divergent transition is similar to falling down a very steep slope, with the consequence of not being able to correctly map that area. In this analogy, what the cartographer could do is moving through the steep slope giving smaller steps to avoid falling. In Stan, the step size is set up automatically, but we can change a parameter called `adapt_delta` that controls the step size. By default we have that `adapt_delta = .95`, but we can increase that number to make Stan take smaller steps, which should reduce the number of divergent transitions. The maximum value we can set for `adapt_delta` is close (but necessarely less than) 1, with the downside that an increase implies a somewhat slower exploration of the posterior distribution. Usually, an `adapt_delta = 0.99` works well if we only have a few divergent transitions.
+
+2. However, there are cases in which increasing `adapt_delta` is not sufficient, and divergent transitions still occur. In this case, introducing weakly informative priors can be extremelly helpful. Although `rstanarm` provides by default weakly informative priors, in most applications these tend to be too weak. By using more reasonable priors, we make the posterior distribution easier to explore.
+    + The priors for the scaled coefficients are ${\rm Normal}(0, 2.5)$. When the coefficients are not scaled, `rstanarm` will automatically adjust the scaling of the priors as detailed in the [prior vignette](https://cran.r-project.org/web/packages/rstanarm/vignettes/priors.html). In most cases, and particularly when we find computational issues, it is reasonable to give stronger priors on the scaled coefficients such as ${\rm Normal}(0, 1)$.
+    + Multilevel models with multiple group-level standard deviation parameters (e.g. $\sigma^{\rm age}$, $\sigma^{\rm eth}$, $\sigma^{\rm educ.eth}$, etc.) tend to be hard to estimate and sometimes present serious computational issues. The default prior for the covariance matrix is `decov(reg. = 1, conc. = 1, shape = 1, scale = 1)`. However, in a varying-intercept model such as this one (i.e. with structure `(1 | a) + (1 | b) + ... + (1 | n)`) the group-level standard deviations are independent of each other, and therefore the prior is simply a gamma distribution with some shape and scale. Consequently, `decov(shape = 1, scale = 1)` implies a weakly informative prior ${\rm Gamma(shape = 1, scale = 1)} = {\rm Exponential(scale = 1)}$ on each group-level standard deviation. This is too weak in most situations, and using something like ${\rm Exponential(scale = 0.5)}$ can be crucial for stabilizing computation.
+  
+Therefore, something like this has much fewer chances of running into computational issues than simply leaving the defaults:
+
+```{r, eval=FALSE}
+fit <- stan_glmer(abortion ~ (1 | state) + (1 | eth) + (1 | educ) + (1 | age) + male + 
+                    (1 | male:eth) + (1 | educ:age) + (1 | educ:eth) + 
+                    repvote + factor(region),
+  family = binomial(link = "logit"),
+  data = df,
+  prior = normal(0, 1, autoscale = TRUE),
+  prior_covariance = decov(scale = 0.50),
+  adapt_delta = 0.99,
+  refresh = 0,
+  seed = 1010)
+```
+
+More details about divergent transitions can be found in the [Brief Guide to Stan’s Warnings](https://mc-stan.org/misc/warnings.html#divergent-transitions-after-warmup) and in the [Stan Reference Manual](https://mc-stan.org/docs/2_24/reference-manual/divergent-transitions.html). More information and references about priors can be found in the [Prior Choice Recommendations Wiki](https://github.com/stan-dev/stan/wiki/Prior-Choice-Recommendations).
+
+## Appendix: Data Preprocessing for CCES and Census Data
+
+### CCES
+
+The code below shows in more detail how the processing of the CCES was done. Notice that age, a continous variable, is split into different levels, and that the levels of some factors are modified in order to match the ACS data.
+
+```{r, eval = FALSE}
+clean_cces <- function(df, list_states_abb, list_states_num){
+  
+  ## Abortion -- dichotomous (0 - Oppose / 1 - Support)
+  df$abortion <- abs(df$CC18_321a-2)
+  
+  ## State -- factor
+  df$state <- df$inputstate
+  df$state <- factor(df$state, levels = list_states_num, labels = list_states_abb)
+  
+  ## Gender -- dichotomous coded as -0.5 Female and +0.5 Male, as this allows for an intercept that represents a 
+  ## 'midway' point between the two groups.
+  df$male <- abs(df$gender-2)
+  
+  ## Ethnicity -- factor
+  df$eth <- factor(df$eth, 
+                    levels = 1:8, 
+                    labels = c("White", "Black", "Hispanic", "Asian", "Native American", "Mixed", "Other", "Middle Eastern"))
+  df$eth <- fct_collapse(df$eth, "Other" = c("Asian", "Other", "Middle Eastern", "Mixed", "Native American"))
+  
+  ## Age -- cut into factor
+  df$age <- 2018 - df$birthyr
+  df$age <- cut(as.integer(df$age), breaks = c(0, 29, 39, 49, 59, 69, 120), 
+                labels = c("18-29","30-39","40-49","50-59","60-69","70+"),
+                ordered_result = TRUE)
+  
+  ## Education -- factor
+  df$educ <- factor(as.integer(df$educ), 
+                    levels = 1:6, 
+                    labels = c("No HS", "HS", "Some college", "Associates", "4-Year College", "Post-grad"), ordered = TRUE)
+  df$educ <- fct_collapse(df$educ, "Some college" = c("Some college", "Associates"))  
+  
+  # Clean and remove NAs
+  df <- df %>% select(abortion, state, eth, male, age, educ) %>% drop_na()
+  
+}
+```
+
+### American Community Survey
+
+We start downloading the Public Use Microdata Sample from the American Community Survey [data repository](https://www2.census.gov/programs-surveys/acs/data/pums/2018/5-Year/). The repository contains two .zip files corresponding to each state: one for individual-level variables and other for household-level variables. All the variables considered in our analysis are available in the individual-level files, but we will also download and process the household-level variable income to show how this could be done.
+
+```{r, eval=FALSE}
+dir.create("postrat_data/")
+system('wget -O postrat_data -e robots=off -nd -A "csv_*.zip" -R "index.html","csv_hus.zip","csv_pus.zip"  https://www2.census.gov/programs-surveys/acs/data/pums/2018/5-Year/')
+```
+
+Once we have the dataset, there are two main considerations:
+
+* Focus on the population of interest: We must take into account that the population of interest for the CCES survey, which only considers US citizens above 18 years of age, is different from the population reflected in the ACS. Therefore, we had to remove the cases of underages and non-US citizens in the ACS.
+
+* Match the levels of the two datasets: The levels of the variables in the poststratification table must match the levels of the variables in the CCES dataset. In this case, this required preprocessing the variables of the CCES and ACS in a way that the levels were compatible.
+
+```{r, eval=FALSE}
+list_states_abb <- datasets::state.abb
+list_states_num <- rep(NA, length(list_states_abb))
+
+list_of_postrat_df <- list()
+
+for(i in 1:length(list_states_num)){
+  # Unzip and read household and person files for state i
+  p_name <- paste0("postrat_data/csv_p", tolower(list_states_abb[i]),".zip")
+  h_name <- paste0("postrat_data/csv_h", tolower(list_states_abb[i]),".zip")
+  p_csv_name <- grep('\\.csv$', unzip(p_name, list=TRUE)$Name, ignore.case=TRUE, value=TRUE)
+  temp_df_p_state <- fread(unzip(p_name, files = p_csv_name),
+                           header=TRUE, select=c("SERIALNO","ST","CIT","PWGTP","RAC1P","HISP","SEX","AGEP", "SCHL"))
+  h_csv_name <- grep('\\.csv$', unzip(h_name, list=TRUE)$Name, ignore.case=TRUE, value=TRUE)
+  temp_df_h_state <- fread(unzip(h_name, files = h_csv_name),
+                         header=TRUE, select=c("SERIALNO","FINCP"))
+  
+  # Merge the individual and household level variables according to the serial number
+  temp_df <- merge(temp_df_h_state, temp_df_p_state, by = "SERIALNO")
+
+  # Update list of state numbers that will be used later
+  list_states_num[i] <-  temp_df$ST[1]
+
+  ## Filter by citizenship
+  temp_df <- temp_df %>% filter(CIT!=5)
+
+  ## State
+  temp_df$state <- temp_df$ST
+
+  ## Gender
+  temp_df$male <- abs(temp_df$SEX-2)-0.5
+
+  ## ethnicity
+  temp_df$RAC1P <- factor(temp_df$RAC1P, 
+                          levels = 1:9, 
+                          labels = c("White", "Black", "Native Indian", "Native Alaskan",
+                                     "Native Indian or Alaskan", "Asian", "Pacific Islander", "Other", 
+                                     "Mixed"))
+  temp_df$eth <- fct_collapse(temp_df$RAC1P, "Native American" = c("Native Indian", "Native Alaskan", 
+                                                                   "Native Indian or Alaskan"))
+  temp_df$eth <- fct_collapse(temp_df$eth, "Other" = c("Asian", "Pacific Islander", "Other", 
+                                                       "Native American", "Mixed"))
+  levels(temp_df$eth) <- c(levels(temp_df$eth), "Hispanic")
+  temp_df$eth[(temp_df$HISP!=1) & temp_df$eth=="White"] <- "Hispanic"
+
+  ## Age
+  temp_df$age <- cut(as.integer(temp_df$AGEP), breaks = c(0, 17, 29, 39, 49, 59, 69, 120),
+                     labels = c("0-17", "18-29","30-39","40-49","50-59","60-69","70+"),
+                     ordered_result = TRUE)
+  ## Filter out underages
+  temp_df <- filter(temp_df, age!="0-17")
+  temp_df$age <- droplevels(temp_df$age)
+
+  ## Income (not currently used)
+  temp_df$income <- cut(as.integer(temp_df$FINCP), 
+                        breaks = c(-Inf, 9999, 19999, 29999, 39999, 49999, 59999, 69999, 79999, 99999, 
+                                   119999, 149999, 199999, 249999, 349999, 499999, Inf),
+                        ordered_result = TRUE, labels = c("<$10,000", "$10,000 - $19,999", "$20,000 - $29,999", 
+                                                          "$30,000 - $39,999", "$40,000 - $49,999", 
+                                                          "$50,000 - $59,999", "$60,000 - $69,999", 
+                                                          "$70,000 - $79,999","$80,000 - $99,999", 
+                                                          "$100,000 - $119,999", "$120,000 - $149,999",
+                                                          "$150,000 - $199,999","$200,000 - $249,999", 
+                                                          "$250,000 - $349,999", "$350,000 - $499,999", 
+                                                          ">$500,000"))
+  temp_df$income <- fct_explicit_na(temp_df$income, "Prefer Not to Say")
+
+  ## Education
+  temp_df$educ <- cut(as.integer(temp_df$SCHL), breaks = c(0, 15, 17, 19, 20, 21, 24), ordered_result = TRUE,
+                        labels = c("No HS", "HS", "Some college", "Associates", "4-Year College", "Post-grad"))
+  temp_df$educ <- fct_collapse(temp_df$educ, "Some college" = c("Some college", "Associates"))
+  
+  # Calculate the poststratification table
+  temp_df <- temp_df %>% drop_na(state, eth, male, age, educ, PWGTP) %>% 
+    select(state, eth, male, age, educ, PWGTP)
+  ## Trick to 'expand' the poststratification table so groupby produces all the rows, even the ones with N = 0
+  temp_df_expanded  <- temp_df %>% 
+    expand(state, eth, male, age, educ) %>% 
+    mutate(PWGTP = 0)
+  temp_df <- rbind(temp_df, temp_df_expanded)
+  ## We sum by the inidividual-level weight PWGTP
+  list_of_postrat_df[[i]] <- temp_df %>% 
+    group_by(state, eth, male, age, educ, .drop = FALSE) %>% 
+    summarise(n = sum(as.numeric(PWGTP)))
+
+  print(paste0(list_states_abb[i], " completed"))
+}
+
+postrat_df <- rbindlist(list_of_postrat_df)
+write.csv(postrat_df, "postrat_data.csv")
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=6, fig.align = "center", include=FALSE}
+# We also include some code for easily plotting the binned residuals and a calibration plot for the logistic model.
+
+# Binned residuals(code from https://avehtari.github.io/ROS-Examples/Arsenic/arsenic_logistic_residuals.html)
+binned_resids <- function (x, y, nclass=sqrt(length(x))){
+  breaks.index <- floor(length(x)*(1:(nclass-1))/nclass)
+  breaks <- c (-Inf, sort(x)[breaks.index], Inf)
+  output <- NULL
+  xbreaks <- NULL
+  x.binned <- as.numeric (cut (x, breaks))
+  for (i in 1:nclass){
+    items <- (1:length(x))[x.binned==i]
+    x.range <- range(x[items])
+    xbar <- mean(x[items])
+    ybar <- mean(y[items])
+    n <- length(items)
+    sdev <- sd(y[items])
+    output <- rbind (output, c(xbar, ybar, n, x.range, 2*sdev/sqrt(n)))
+  }
+  colnames (output) <- c ("xbar", "ybar", "n", "x.lo", "x.hi", "2se")
+  return (list (binned=output, xbreaks=xbreaks))
+}
+
+br8 <- binned_resids(fitted(fit), df$abortion-fitted(fit), nclass=40)$binned
+plot(range(br8[,1]), range(br8[,2],br8[,6],-br8[,6]),
+     xlab="Estimated  Pr (support)", ylab="Average residual",
+     type="n", main="Binned residual plot", mgp=c(2,.5,0))
+abline(0,0, col="gray", lwd=.5)
+lines(br8[,1], br8[,6], col="gray", lwd=.5)
+lines(br8[,1], -br8[,6], col="gray", lwd=.5)
+points(br8[,1], br8[,2], pch=20, cex=.5)
+
+# Calibration
+calPlotData<-caret::calibration(y ~ pred, 
+                         data = data.frame(pred=colMeans(posterior_epred(fit)), y = factor(df$abortion)), 
+                         cuts=10, class="1")
+ggplot(calPlotData, auto.key = list(columns = 2)) + ggtitle("Calibration")
+```

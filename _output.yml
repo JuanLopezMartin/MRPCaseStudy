@@ -1,0 +1,11 @@
+bookdown::gitbook:
+  css: style.css
+  config:
+    toc:
+      collapse: section
+      before: |
+        <li><a href="./">MRP Case Studies</a></li>
+    fontsettings:
+      theme: white
+      family: serif
+      size: 1

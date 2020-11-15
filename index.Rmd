@@ -1,0 +1,18 @@
+---
+title: "Multilevel Regression and Poststratification Case Studies"
+date: "`r Sys.Date()`"
+author: "Juan Lopez-Martin, Justin H. Phillips, and Andrew Gelman^[The authors would like to thank Lauren Kennedy and Jonah Gabry, who developed an initial version the MRP introduction.]"
+site: bookdown::bookdown_site
+output: bookdown::gitbook
+documentclass: book
+bibliography: [book.bib, mrp.bib]
+biblio-style: apalike
+link-citations: yes
+github-repo: rstudio/bookdown-demo
+description: "Introduction to Bayesian Multilevel Modeling and Poststratification using rstanarm, brms, and Stan"
+---
+
+# Notes
+
+These case studies are still under development. Please send any feedback to [jl5522@columbia.edu](jl5522@columbia.edu).
+

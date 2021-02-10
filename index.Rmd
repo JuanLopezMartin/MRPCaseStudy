@@ -1,6 +1,6 @@
 ---
 title: "Multilevel Regression and Poststratification Case Studies"
-date: "`r Sys.Date()`"
+date: "2021-02-09"
 author: "Juan Lopez-Martin, Justin H. Phillips, and Andrew Gelman^[The authors would like to thank Lauren Kennedy and Jonah Gabry, who developed an initial version the MRP introduction.]"
 site: bookdown::bookdown_site
 output: bookdown::gitbook
@@ -14,5 +14,9 @@ description: "Introduction to Bayesian Multilevel Modeling and Poststratificatio
 
 # Notes
 
-These case studies are still under development. Please send any feedback to [jl5522@columbia.edu](jl5522@columbia.edu).
+The following case studies intend to introduce users to Multilevel Modeling and Poststratification (MRP) and some of its extensions, providing reusable code and clear explanations. The first chapter presents MRP, a statistical technique that allows to estimate subnational estimates from national surveys while adjusting for nonrepresentativeness. The second chapter extends MRP to overcome the limitation of only using variables included in the census. 
+
+The tutorials assume certain familiarity with R and Bayesian Statistics. A good reference to the required background is @gelman2020raos. Additionally, multilevel models are covered in @gelman2006data (Part 2A) or @mcelreath2020statistical (Chapters 12 and 13).
+
+The case studies are still under development. Please send any feedback to [jl5522@columbia.edu](jl5522@columbia.edu).
 

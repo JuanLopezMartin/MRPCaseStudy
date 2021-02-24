@@ -9,3 +9,10 @@ bookdown::gitbook:
       theme: white
       family: serif
       size: 1
+
+bookdown::pdf_book:
+    linestretch: 1.5
+    fontsize: 7pt
+    links-as-notes: true
+    includes:
+      in_header: "preamble.tex"

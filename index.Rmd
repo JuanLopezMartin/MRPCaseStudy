@@ -1,22 +1,50 @@
 ---
 title: "Multilevel Regression and Poststratification Case Studies"
 date: "2021-02-09"
-author: "Juan Lopez-Martin, Justin H. Phillips, and Andrew Gelman^[The authors would like to thank Lauren Kennedy and Jonah Gabry, who developed an initial version the MRP introduction.]"
+author: "Juan Lopez-Martin, Justin H. Phillips, and Andrew Gelman^[The authors would like to thank Lauren Kennedy and Jonah Gabry, who developed an initial version the MRP introduction, and Mitzi Morris, for her extensive feedback and helpful discussions.]"
 site: bookdown::bookdown_site
-output: bookdown::gitbook
-documentclass: book
 bibliography: [book.bib, mrp.bib]
 biblio-style: apalike
 link-citations: yes
 github-repo: rstudio/bookdown-demo
 description: "Introduction to Bayesian Multilevel Modeling and Poststratification using rstanarm, brms, and Stan"
+documentclass: book
+classoption: oneside,openany
+fontsize: 10.5pt
+geometry:
+  - top=3cm
+  - bottom=2cm
+  - left=2cm
+  - right=2cm
+  - headsep=1cm
+  - footskip=0.65cm
+urlcolor: MidnightBlue
+linkcolor: MidnightBlue
+output: 
+  bookdown::pdf_book:
+    links-as-notes: true
+    includes:
+      in_header: preamble.tex
+    keep_tex: yes
+  bookdown::gitbook:
+    css: style.css
+    config:
+      toc:
+        collapse: section
+        before: |
+          <li><a href="./">MRP Case Studies</a></li>
+      fontsettings:
+        theme: white
+        family: serif
+        size: 1
 ---
 
-# Notes
+# Preface {-}
 
-The following case studies intend to introduce users to Multilevel Modeling and Poststratification (MRP) and some of its extensions, providing reusable code and clear explanations. The first chapter presents MRP, a statistical technique that allows to estimate subnational estimates from national surveys while adjusting for nonrepresentativeness. The second chapter extends MRP to overcome the limitation of only using variables included in the census. 
+The following case studies intend to introduce users to Multilevel Modeling and Poststratification (MRP), providing reusable code and clear explanations. The first chapter presents MRP, a statistical technique that allows to estimate subnational estimates from national surveys while adjusting for nonrepresentativeness. The second chapter extends MRP to overcome the limitation of only using variables included in the census. Lastly, the third chapter provides an example on how to download and preprocess survey and census data in the US context.
 
-The tutorials assume certain familiarity with R and Bayesian Statistics. A good reference to the required background is @gelman2020raos. Additionally, multilevel models are covered in @gelman2006data (Part 2A) or @mcelreath2020statistical (Chapters 12 and 13).
+We assume certain familiarity with R and Bayesian Statistics. A good reference for the required background is @gelman2020raos, with Capter 17 on poststratification being particularly relevant. Additionally, multilevel models are covered in @gelman2006data (Part 2A) or @mcelreath2020statistical (Chapters 12 and 13).
+
+These tutorials do not display some non-essential code, such as the ones used to generate figures and tables. However, all the code is available [on GitHub](https://github.com/JuanLopezMartin/MRPCaseStudy) as Rmarkdown files (`01-mrp-intro.Rmd`, `02-mrp-noncensus.Rmd`, and `03-data-processing.Rmd`).
 
 The case studies are still under development. Please send any feedback to [jl5522@columbia.edu](jl5522@columbia.edu).
-

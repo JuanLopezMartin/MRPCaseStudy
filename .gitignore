@@ -1,9 +1,11 @@
 .Rproj.user
 .Rhistory
 .RData
+.git
 _publish.R
 _book
 _bookdown_files
+MRP-case-studies.log
 rsconnect
 *.rds
 cces18_common_vv.csv

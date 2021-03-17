@@ -237,7 +237,7 @@ fit_party <- brm(party ~ (1 | state) + (1 | eth) + (1 | age) + (1 | educ) + male
 ```
 
 ```{r, echo = FALSE}
-# saveRDS(fit_party, file = "fit_party_example.rds")
+#saveRDS(fit_party, file = "fit_party_example.rds")
 fit_party <- readRDS("fit_party_example.rds")
 ```
 
@@ -304,12 +304,12 @@ poststrat_df_threefold[1:9,c(1, 2, 3, 4, 5, 9, 6)] %>% mutate(n = round(K[1:9, 1
 
 Now, we will use this extended poststratification table (or poststratification tables, if we consider the uncertainty about the estimates) to adjust for differential party nonresponse.
 
-### Setting up example with an artificially nonrepresentative sample
+### Setting up example with an artificially nonrepresentative sample {.unnumbered #artificially-nonrepresentative-sample}
 
 To demostraty how non-census MRP can adjust for party, we will use a survey that is biased with respect to party. As we are already familiar with the CCES dataset, what we are going to do is to take a different sample of 5,000 respondents that simulates a high nonresponse rate among Republicans and, to a lesser degree, Independents.
 
 ```{r}
-# Random sample of 5,000 that weights by party
+# Biased sample of 5,000 that oversamples Democrats
 cces_biased_df <- cces_all_df %>% 
   sample_n(5000, weight = I((cces_all_df$party=="Democrat")*1 + 
                             (cces_all_df$party=="Independent")*0.75 + 
@@ -335,7 +335,7 @@ fit_abortion_standard <- stan_glmer(abortion ~ (1 | state) + (1 | eth) + (1 | ag
 ```
 
 ```{r, echo = FALSE}
-# saveRDS(fit_abortion_standard, file = "fit_abortion_standard.rds")
+#saveRDS(fit_abortion_standard, file = "fit_abortion_standard.rds")
 fit_abortion_standard <- readRDS("fit_abortion_standard.rds")
 ```
 
@@ -372,14 +372,14 @@ $$
 
 $$
 \begin{aligned}
-\alpha_{\rm s}^{\rm state} &\sim {\rm Normal}(\gamma^0 + \gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma_{\rm state}) \textrm{ for s = 1,...,50}\\
-\alpha_{\rm a}^{\rm age} & \sim {\rm Normal}(0,\sigma_{\rm age}) \textrm{ for a = 1,...,6}\\
-\alpha_{\rm r}^{\rm eth} & \sim {\rm Normal}(0,\sigma_{\rm eth}) \textrm{ for r = 1,...,4}\\
-\alpha_{\rm e}^{\rm educ} & \sim {\rm Normal}(0,\sigma_{\rm educ}) \textrm{ for e = 1,...,5}\\
-\alpha_{\rm g,r}^{\rm male.eth} & \sim {\rm Normal}(0,\sigma_{\rm male.eth}) \textrm{ for g = 1,2 and r = 1,...,4}\\
-\alpha_{\rm e,a}^{\rm educ.age} & \sim {\rm Normal}(0,\sigma_{\rm educ.age}) \textrm{ for e = 1,...,5 and a = 1,...,6}\\
-\alpha_{\rm e,r}^{\rm educ.eth} & \sim {\rm Normal}(0,\sigma_{\rm educ.eth}) \textrm{ for e = 1,...,5 and r = 1,...,4}\\
-\alpha_{\rm p}^{\rm party} & \sim {\rm Normal}(0,\sigma_{\rm party}) \textrm{ for p = 1,2,3}\\
+\alpha_{\rm s}^{\rm state} &\sim {\rm normal}(\gamma^0 + \gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma_{\rm state}) \textrm{ for s = 1,...,50}\\
+\alpha_{\rm a}^{\rm age} & \sim {\rm normal}(0,\sigma_{\rm age}) \textrm{ for a = 1,...,6}\\
+\alpha_{\rm r}^{\rm eth} & \sim {\rm normal}(0,\sigma_{\rm eth}) \textrm{ for r = 1,...,4}\\
+\alpha_{\rm e}^{\rm educ} & \sim {\rm normal}(0,\sigma_{\rm educ}) \textrm{ for e = 1,...,5}\\
+\alpha_{\rm g,r}^{\rm male.eth} & \sim {\rm normal}(0,\sigma_{\rm male.eth}) \textrm{ for g = 1,2 and r = 1,...,4}\\
+\alpha_{\rm e,a}^{\rm educ.age} & \sim {\rm normal}(0,\sigma_{\rm educ.age}) \textrm{ for e = 1,...,5 and a = 1,...,6}\\
+\alpha_{\rm e,r}^{\rm educ.eth} & \sim {\rm normal}(0,\sigma_{\rm educ.eth}) \textrm{ for e = 1,...,5 and r = 1,...,4}\\
+\alpha_{\rm p}^{\rm party} & \sim {\rm normal}(0,\sigma_{\rm party}) \textrm{ for p = 1,2,3}\\
 \end{aligned}
 $$
 
@@ -396,7 +396,7 @@ fit_abortion_noncensus <- stan_glmer(abortion ~ (1 | state) + (1 | eth) + (1 | a
 ```
 
 ```{r, echo = FALSE}
-# saveRDS(fit_abortion_noncensus, file = "fit_abortion_noncensus.rds")
+#saveRDS(fit_abortion_noncensus, file = "fit_abortion_noncensus.rds")
 fit_abortion_noncensus <- readRDS("fit_abortion_noncensus.rds")
 ```
 
@@ -476,17 +476,17 @@ for(i in 1:nrow(states_df)) {
   # Standard MRP estimate
   state_standard_epred_mat <- standard_epred_mat[ ,filtering_condition]
   k_filtered <- poststrat_df[filtering_condition, ]$n
-  standard_estimates_vector <- state_standard_epred_mat %*% k_filtered / sum(k_filtered)
-  states_df$standard_mrp_estimate[i] <- mean(standard_estimates_vector)
-  states_df$standard_mrp_estimate_se[i] <- sd(standard_estimates_vector)
+  standard_estimates_vector_sub <- state_standard_epred_mat %*% k_filtered / sum(k_filtered)
+  states_df$standard_mrp_estimate[i] <- mean(standard_estimates_vector_sub)
+  states_df$standard_mrp_estimate_se[i] <- sd(standard_estimates_vector_sub)
   
   # Noncensus MRP estimate 
   state_noncensus_epred_mat <- noncensus_epred_mat[ ,filtering_condition_threefold]
   K_filtered <- K[filtering_condition_threefold, ]
-  noncensus_estimates_vector <- colSums(t(state_noncensus_epred_mat)*
+  noncensus_estimates_vector_sub <- colSums(t(state_noncensus_epred_mat)*
                                           K_filtered)/colSums(K_filtered)
-  states_df$noncensus_mrp_estimate[i] <- mean(noncensus_estimates_vector)
-  states_df$noncensus_mrp_estimate_se[i] <- sd(noncensus_estimates_vector)
+  states_df$noncensus_mrp_estimate[i] <- mean(noncensus_estimates_vector_sub)
+  states_df$noncensus_mrp_estimate_se[i] <- sd(noncensus_estimates_vector_sub)
   
   # Full survey estimate
   states_df$full_cces_estimate[i] <- mean(filter(cces_all_df, 

@@ -41,9 +41,9 @@ output:
 
 # Preface {-}
 
-The following case studies intend to introduce users to Multilevel Modeling and Poststratification (MRP), providing reusable code and clear explanations. The first chapter presents MRP, a statistical technique that allows to estimate subnational estimates from national surveys while adjusting for nonrepresentativeness. The second chapter extends MRP to overcome the limitation of only using variables included in the census. Lastly, the third chapter provides an example on how to download and preprocess survey and census data in the US context.
+The following case studies intend to introduce users to Multilevel regression and poststratification (MRP), providing reusable code and clear explanations. The first chapter presents MRP, a statistical technique that allows to estimate subnational estimates from national surveys while adjusting for nonrepresentativeness. The second chapter extends MRP to overcome the limitation of only using variables included in the census. Lastly, the third chapter provides an example on how to download and preprocess survey and census data in the US context.
 
-We assume certain familiarity with R and Bayesian Statistics. A good reference for the required background is @gelman2020raos, with Capter 17 on poststratification being particularly relevant. Additionally, multilevel models are covered in @gelman2006data (Part 2A) or @mcelreath2020statistical (Chapters 12 and 13).
+We assume certain familiarity with R and Bayesian statistics. A good reference for the required background is @gelman2020raos, with Chapter 17 on poststratification being particularly relevant. Additionally, multilevel models are covered in @gelman2006data (Part 2A) or @mcelreath2020statistical (Chapters 12 and 13).
 
 These tutorials do not display some non-essential code, such as the ones used to generate figures and tables. However, all the code is available [on GitHub](https://github.com/JuanLopezMartin/MRPCaseStudy) as Rmarkdown files (`01-mrp-intro.Rmd`, `02-mrp-noncensus.Rmd`, and `03-data-processing.Rmd`).
 

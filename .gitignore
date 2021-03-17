@@ -5,6 +5,7 @@
 _publish.R
 _book
 _bookdown_files
+poststrat_data
 MRP-case-studies.log
 rsconnect
 *.rds

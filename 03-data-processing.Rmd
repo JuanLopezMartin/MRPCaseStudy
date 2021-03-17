@@ -1,5 +1,15 @@
 # Downloading and Processing Data
 
+```{r packages-3, message=FALSE, echo = FALSE}
+library(data.table)
+library(dplyr)
+library(forcats)
+library(tidyr)
+library(reshape2)
+library(kableExtra)
+library(ggplot2)
+```
+
 ## CCES {#CCES}
 
 The 2018 CCES raw survey data can be downloaded from the [CCES Dataverse](https://dataverse.harvard.edu)
@@ -198,8 +208,8 @@ Some researchers may prefer to access the 2018 5-year ACS data directly without 
 # We start downloading all the zip files using wget. If you are using Windows you can download
 # a pre-built wget from http://gnuwin32.sourceforge.net/packages/wget.htm
 dir.create("poststrat_data/")
-system('wget -O poststrat_data -e robots=off -nd -A "csv_*.zip" -R "index.html","csv_hus.zip","csv_pus.zip" 
-       https://www2.census.gov/programs-surveys/acs/data/pums/2018/5-Year/')
+system('wget -O poststrat_data -e robots=off -nd -A "csv_*.zip" -R "index.html","csv_hus.zip",
+"csv_pus.zip" https://www2.census.gov/programs-surveys/acs/data/pums/2018/5-Year/')
 ```
 
 If this does not work, you can also access the [data repository](https://www2.census.gov/programs-surveys/acs/data/pums/2018/5-Year/) and download the files directly from your browser.
@@ -299,6 +309,113 @@ for(i in 1:length(list_states_num)){
 poststrat_df <- rbindlist(list_of_poststrat_df)
 # Clean up state names
 poststrat_df$state <- recode_fips(state)
+# Write as csv
+write.csv(poststrat_df, "poststrat_df.csv", row.names = FALSE)
+```
+
+Some researchers may prefer to access the 2018 5-year ACS data directly without using IPUMS, which makes the process less intuitive but also more reproducible. Additionally, this does not require creating an account, as the Public Use Microdata Sample (PUMS) from the ACS can be downloaded directly from the [data repository](https://www2.census.gov/programs-surveys/acs/data/pums/2018/5-Year/). The repository contains two .zip files for each state: one for individual-level variables and other for household-level variables. There are also two files, `csv_hus.zip` and `csv_hus.zip`, which contain these variables for all states. We will start creating a folder called `poststrat_data` and downloading these two files:
+
+```{r, eval=FALSE}
+# If you are using Windows you can download a pre-built wget from 
+# http://gnuwin32.sourceforge.net/packages/wget.htm
+dir.create("poststrat_data/")
+system('wget -O poststrat_data2 -e robots=off -nd -A "csv_hus.zip","csv_pus.zip"
+       https://www2.census.gov/programs-surveys/acs/data/pums/2018/5-Year/')
+```
+
+If this does not work, you can also download the files directly from the data repository.
+
+Once the data is downloaded, we unzip the files and merge them together. IPUMS integrates census data accross different surveys, which results in different naming conventions and levels in some of the variables with respect to the PUMS data directly downloaded from the ACS repository. Therefore, the preprocessing steps is slightly different from the code shown above, but as the underlying data is the same we obtain an identical poststratification table. All the variables considered in our analysis are available in the individual-level files, but we will also download and process the household-level variable income in order to show how this could be done.
+
+```{r, eval=FALSE}
+list_states_abb <- datasets::state.abb
+list_states_num <- rep(NA, length(list_states_abb))
+
+# Unzip and read household and person files
+p_name <- paste0("poststrat_data/csv_pus.zip")
+h_name <- paste0("poststrat_data/csv_hus.zip")
+
+p_csv_name <- grep('\\.csv$', unzip(p_name, list=TRUE)$Name, ignore.case=TRUE, value=TRUE)
+unzip(p_name, files = p_csv_name, exdir = "poststrat_data")
+p_csv_name = paste0("poststrat_data/", p_csv_name)
+temp_df_p <- rbindlist(lapply(p_csv_name, fread, header=TRUE, 
+                              select=c("SERIALNO","ST","CIT","PWGTP","RAC1P","HISP","SEX",
+                                       "AGEP","SCHL")))
+
+h_csv_name <- grep('\\.csv$', unzip(h_name, list=TRUE)$Name, ignore.case=TRUE, value=TRUE)
+unzip(h_name, files = h_csv_name, exdir = "poststrat_data")
+h_csv_name = paste0("poststrat_data/", h_csv_name)
+temp_df_h <- rbindlist(lapply(h_csv_name, fread, header=TRUE, select=c("SERIALNO","FINCP")))
+
+# Merge the individual and household level variables according to the serial number
+temp_df <- merge(temp_df_h, temp_df_p, by = "SERIALNO")
+
+# Exclude associated ares that are not states based on FIPS codes 
+temp_df <- temp_df %>% filter(ST %in% state_fips)
+temp_df$ST  <- factor(temp_df$ST, levels = state_fips, labels = state_ab)
+
+## Filter by citizenship
+temp_df <- temp_df %>% filter(CIT!=5)
+
+## State
+temp_df$state <- temp_df$ST
+
+## Gender
+temp_df$male <- abs(temp_df$SEX-2)-0.5
+
+## Ethnicity
+temp_df$RAC1P <- factor(temp_df$RAC1P, 
+                        levels = 1:9, 
+                        labels = c("White", "Black", "Native Indian", "Native Alaskan",
+                                   "Native Indian or Alaskan", "Asian", "Pacific Islander", 
+                                   "Other", "Mixed"))
+temp_df$eth <- fct_collapse(temp_df$RAC1P, "Native American" = c("Native Indian", 
+                                                                 "Native Alaskan",
+                                                                 "Native Indian or Alaskan"))
+temp_df$eth <- fct_collapse(temp_df$eth, "Other" = c("Asian", "Pacific Islander", "Other", 
+                                                     "Native American", "Mixed"))
+levels(temp_df$eth) <- c(levels(temp_df$eth), "Hispanic")
+temp_df$eth[(temp_df$HISP!=1) & temp_df$eth=="White"] <- "Hispanic"
+
+## Age
+temp_df$age <- cut(as.integer(temp_df$AGEP), breaks = c(0, 17, 29, 39, 49, 59, 69, 120),
+                   labels = c("0-17", "18-29","30-39","40-49","50-59","60-69","70+"),
+                   ordered_result = TRUE)
+# filter out underages
+temp_df <- filter(temp_df, age!="0-17")
+temp_df$age <- droplevels(temp_df$age)
+
+## Income (not currently used)
+temp_df$income <- cut(as.integer(temp_df$FINCP), 
+                      breaks = c(-Inf, 9999, 19999, 29999, 39999, 49999, 59999, 69999, 79999, 
+                                 99999, 119999, 149999, 199999, 249999, 349999, 499999, Inf),
+                      ordered_result = TRUE, 
+                      labels = c("<$10,000", "$10,000 - $19,999", "$20,000 - $29,999", 
+                                 "$30,000 - $39,999", "$40,000 - $49,999",
+                                 "$50,000 - $59,999", "$60,000 - $69,999",
+                                 "$70,000 - $79,999","$80,000 - $99,999",
+                                 "$100,000 - $119,999", "$120,000 - $149,999",
+                                 "$150,000 - $199,999","$200,000 - $249,999",
+                                 "$250,000 - $349,999", "$350,000 - $499,999",
+                                 ">$500,000"))
+temp_df$income <- fct_explicit_na(temp_df$income, "Prefer Not to Say")
+
+## Education
+temp_df$educ <- cut(as.integer(temp_df$SCHL), breaks = c(0, 15, 17, 19, 20, 21, 24), 
+                    ordered_result = TRUE,
+                    labels = c("No HS", "HS", "Some college", "Associates", 
+                               "4-Year College", "Post-grad"))
+temp_df$educ <- fct_collapse(temp_df$educ, "Some college" = c("Some college", "Associates"))
+
+# Calculate the poststratification table
+temp_df <- temp_df %>% drop_na(state, eth, male, age, educ, PWGTP) %>% 
+  select(state, eth, male, age, educ, PWGTP)
+
+## We sum by the inidividual-level weight PWGTP
+poststrat_df <- temp_df %>% 
+  group_by(state, eth, male, age, educ, .drop = FALSE) %>% 
+  summarise(n = sum(as.numeric(PWGTP)))
+
 # Write as csv
 write.csv(poststrat_df, "poststrat_df.csv", row.names = FALSE)
 ```

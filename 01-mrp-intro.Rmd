@@ -1,5 +1,5 @@
 
-# Introduction to MRP
+# Introduction to Mister P
 
 ```{r packages-1, message=FALSE, echo = FALSE, cache=FALSE}
 library(rstan)
@@ -133,19 +133,19 @@ border-radius: 4px;
 ')
 ```
 
-Multilevel Modeling and Poststratification (MRP) has become widely used in two closely related applications:
+Multilevel regression and poststratification (MRP, also called MrP or Mister P) has become widely used in two closely related applications:
 
-1. Small-area estimation: Sub-national surveys are not always available, and even then finding comparable surveys across sub-national units is rare. However, public views at the sub-national level are often central, as many policies are decided by local goverments or sub-national area representatives at national assemblies. MRP allows us to use national surveys to generate reliable estimates of sub-national opinion (@park2004bayesian, @lax2009gay, @lax2009states, @kiewiet2018predicting).
+1. Small-area estimation: Subnational surveys are not always available, and even then finding comparable surveys across subnational units is rare. However, public views at the subnational level are often central, as many policies are decided by local goverments or subnational area representatives at national assemblies. MRP allows us to use national surveys to generate reliable estimates of subnational opinion (@park2004bayesian, @lax2009gay, @lax2009states, @kiewiet2018predicting).
 
 2. Using nonrepresentative surveys: Many surveys face serious difficulties in recruiting representative samples of participants (e.g. because of non-response bias). However, with proper statistical adjustment, nonrepresentative surveys can be used to generate accurate opinion estimates (@wang2015xbox, @downes2018multilevel).
 
-In this case study, we will show how to use MRP to estimate public opinion. In the first section we introduce the data. Then, we describe the two essential stages of MRP: building an individual-response model and using poststratification. That is, first, we take individual responses to national surveys and use multilevel modeling in order to predict opinion estimates based on demographic-geographic subgroups (e.g. middle-aged white female with postgraduate education in California). Secondly, these opinion estimates by subgroups are weighted by the frequency of these subgroups at the (national or subnational) unit of interest. In the fourth section we show how MRP can be used to obtain accurate national estimates from a biased sample. Lastly, the five section introduces some practical considerations.
+In this case study, we will show how to use MRP to estimate public opinion. Following a brief introduction to the data, we will describe the two essential stages of MRP: building an individual-response model and using poststratification. First, we take individual responses to a national survey and use multilevel modeling in order to predict opinion estimates based on demographic-geographic subgroups (e.g. middle-aged white female with postgraduate education in California). Secondly, these opinion estimates by subgroups are weighted by the frequency of these subgroups at the (national or subnational) unit of interest. With these two steps, MRP emerged (@gelman1997poststratification) as an approach that brought together the advantages of regularized estimation and poststratification, two techniques that had shown promising results in the field of survey research (see @fay1979estimates and @little1993post). After presenting how MRP can be used for obtaining subregion or subgroup estimates and for adjusting for nonresponse bias, we will conclude with some practical considerations.
 
 ## Data {#data}
 
 ### Survey data {.unnumbered #survey-data}
 
-The first step is to gather and recode raw survey data. These surveys should include some respondent demographic information and some type of geographic indicator (e.g. state, congressional district). In this case, we will use data from the 2018 Cooperative Congressional Election Study (CCES), a US nationwide survey designed by a consortium of 60 research teams and administered by YouGov. The outcome of interest in this introduction is a dichotomous question:
+The first step is to gather and recode raw survey data. These surveys should include some respondent demographic information and some type of geographic indicator (e.g. state, congressional district). In this case, we will use data from the 2018 Cooperative Congressional Election Study (@2018CCES), a US nationwide survey designed by a consortium of 60 research teams and administered by YouGov. The outcome of interest in this introduction is a dichotomous question:
 
 > Allow employers to decline coverage of abortions in insurance plans (Support / Oppose)
 
@@ -371,13 +371,13 @@ where:
 
 $$
 \begin{aligned}
-\alpha_{\rm s}^{\rm state} &\sim {\rm Normal}(\gamma^0 + \gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} \\ & \quad + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma^{\rm state}) \textrm{ for s = 1,...,50}\\
-\alpha_{\rm a}^{\rm age} & \sim {\rm Normal}(0,\sigma^{\rm age}) \textrm{ for a = 1,...,6}\\
-\alpha_{\rm r}^{\rm eth} & \sim {\rm Normal}(0,\sigma^{\rm eth}) \textrm{ for r = 1,...,4}\\
-\alpha_{\rm e}^{\rm educ} & \sim {\rm Normal}(0,\sigma^{\rm educ}) \textrm{ for e = 1,...,5}\\
-\alpha_{\rm g,r}^{\rm male.eth} & \sim {\rm Normal}(0,\sigma^{\rm male.eth}) \textrm{ for g = 1,2 and r = 1,...,4}\\
-\alpha_{\rm e,a}^{\rm educ.age} & \sim {\rm Normal}(0,\sigma^{\rm educ.age}) \textrm{ for e = 1,...,5 and a = 1,...,6}\\
-\alpha_{\rm e,r}^{\rm educ.eth} & \sim {\rm Normal}(0,\sigma^{\rm educ.eth}) \textrm{ for e = 1,...,5 and r = 1,...,4}\\
+\alpha_{\rm s}^{\rm state} &\sim {\rm normal}(\gamma^0 + \gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} \\ & \quad + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma^{\rm state}) \textrm{ for s = 1,...,50}\\
+\alpha_{\rm a}^{\rm age} & \sim {\rm normal}(0,\sigma^{\rm age}) \textrm{ for a = 1,...,6}\\
+\alpha_{\rm r}^{\rm eth} & \sim {\rm normal}(0,\sigma^{\rm eth}) \textrm{ for r = 1,...,4}\\
+\alpha_{\rm e}^{\rm educ} & \sim {\rm normal}(0,\sigma^{\rm educ}) \textrm{ for e = 1,...,5}\\
+\alpha_{\rm g,r}^{\rm male.eth} & \sim {\rm normal}(0,\sigma^{\rm male.eth}) \textrm{ for g = 1,2 and r = 1,...,4}\\
+\alpha_{\rm e,a}^{\rm educ.age} & \sim {\rm normal}(0,\sigma^{\rm educ.age}) \textrm{ for e = 1,...,5 and a = 1,...,6}\\
+\alpha_{\rm e,r}^{\rm educ.eth} & \sim {\rm normal}(0,\sigma^{\rm educ.eth}) \textrm{ for e = 1,...,5 and r = 1,...,4}\\
 \end{aligned}
 $$
 
@@ -388,7 +388,6 @@ knitr::asis_output('
 ')
 ```
 ```{r, include=knitr::is_latex_output(), echo=FALSE}
-#knitr::asis_output('\\begin{tcolorbox}[colback=blue!5!white,colframe=blue!75!black,title=Show model explanation]')
 knitr::asis_output('\\tcolorbox[title=Model explanation, enhanced jigsaw, breakable, colframe = blue!40!black, colback = blue!1!white, fonttitle=\\large, before skip=30pt, after skip=30pt]')
 ```
 
@@ -424,9 +423,9 @@ The `rstanarm` package allows the user to conduct complicated regression analyse
 
 $$
 \begin{aligned}
-\alpha_{\rm s}^{\rm state} &\sim {\rm Normal}(\gamma^0 + \gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma^{\rm state}) \\
+\alpha_{\rm s}^{\rm state} &\sim {\rm normal}(\gamma^0 + \gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma^{\rm state}) \\
 &= \underbrace{\gamma^0}_\text{Intercept} + 
-\underbrace{{\rm Normal}(0, \sigma^{\rm state})}_\text{State varying intercept} + 
+\underbrace{{\rm normal}(0, \sigma^{\rm state})}_\text{State varying intercept} + 
 \underbrace{\gamma^{\rm south} \cdot {\rm South}_{\rm s} + \gamma^{\rm northcentral} \cdot {\rm NorthCentral}_{\rm s} + \gamma^{\rm west} \cdot {\rm West}_{\rm s} + \gamma^{\rm repvote} \cdot {\rm RepVote}_{\rm s}}_\text{State-level predictors expanded to the individual level}
 \end{aligned}
 $$
@@ -501,7 +500,7 @@ knitr::asis_output('\\tcolorbox[title=Model interpretation, enhanced jigsaw, bre
 
 * `regionSouth` ($\gamma^{\rm south}$): According to the model, we expect that someone from a state in the south has, adjusting for the other covariates, up to a 0.1/4 = 2.5% ($\pm 2.5\%$) higher probability of supporting the statement relative to someone from the Northeast, which was the baseline category. The interpretation for `regionNorthCentral` and `regionWest` is similar.
 
-* `Error terms` ($\sigma^{\rm state}$, $\sigma^{\rm age}$, $\sigma^{\rm eth}$, $\sigma^{\rm educ}$, $\sigma^{\rm male.eth}$, $\sigma^{\rm educ.age}$, $\sigma^{\rm educ.eth}$): Remember that the intercepts for the different levels of state, age, ethnicity, education, and the specified interactions are distributed following a normal distribution centered at zero and with a standard deviation that is estimated from the data. The `Error terms` section gives us the estimates for these group-level standard deviations. For instance, $\alpha_{\rm r}^{\rm ethnicity} \sim {\rm Normal}(0, \sigma^{\rm ethnicity})$, where the median estimate for $\sigma^{\rm ethnicity}$ is 0.43. In other words, the variyng intercepts for the different ethnicity groups have a standard deviation that is estimated to be 0.43 on the logit scale, or 0.43/4 = 0.11 on the probability scale. In some cases, we may also want to check the intercepts corresponding to the individual levels of a factor. In `rstanarm`, this can be done using `fit$coefficients`. For instance, the median values for the varying intercepts of race are $\alpha^{\rm eth}_{r = {\rm White}}$  = `r round(fit$coefficients["b[(Intercept) eth:White]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Black}}$ = `r round(fit$coefficients["b[(Intercept) eth:Black]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Hispanic}}$ = `r round(fit$coefficients["b[(Intercept) eth:Hispanic]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Other}}$ = `r round(fit$coefficients["b[(Intercept) eth:Other]"], 2)`.
+* `Error terms` ($\sigma^{\rm state}$, $\sigma^{\rm age}$, $\sigma^{\rm eth}$, $\sigma^{\rm educ}$, $\sigma^{\rm male.eth}$, $\sigma^{\rm educ.age}$, $\sigma^{\rm educ.eth}$): Remember that the intercepts for the different levels of state, age, ethnicity, education, and the specified interactions are distributed following a normal distribution centered at zero and with a standard deviation that is estimated from the data. The `Error terms` section gives us the estimates for these group-level standard deviations. For instance, $\alpha_{\rm r}^{\rm ethnicity} \sim {\rm normal}(0, \sigma^{\rm ethnicity})$, where the median estimate for $\sigma^{\rm ethnicity}$ is 0.43. In other words, the variyng intercepts for the different ethnicity groups have a standard deviation that is estimated to be 0.43 on the logit scale, or 0.43/4 = 0.11 on the probability scale. In some cases, we may also want to check the intercepts corresponding to the individual levels of a factor. In `rstanarm`, this can be done using `fit$coefficients`. For instance, the median values for the varying intercepts of race are $\alpha^{\rm eth}_{r = {\rm White}}$  = `r round(fit$coefficients["b[(Intercept) eth:White]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Black}}$ = `r round(fit$coefficients["b[(Intercept) eth:Black]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Hispanic}}$ = `r round(fit$coefficients["b[(Intercept) eth:Hispanic]"], 2)`, $\alpha^{\rm eth}_{r = {\rm Other}}$ = `r round(fit$coefficients["b[(Intercept) eth:Other]"], 2)`.
 
 
 ```{r, include=knitr::is_html_output(), echo=FALSE}
@@ -518,7 +517,7 @@ knitr::asis_output('\\endtcolorbox')
 
 ### Estimation at the national level {.unnumbered #estimational-national-level}
 
-Currently, all we have achieved is a model that, considering certain factor-type predictors, predicts support for providing employers with the option to decline abortion coverage. To go from this model to a national or sub-national estimate, we need to weight the model predictions for the different subgroups by the actual frequency of these subgroups. This idea can be expressed as:
+Currently, all we have achieved is a model that, considering certain factor-type predictors, predicts support for providing employers with the option to decline abortion coverage. To go from this model to a national or subnational estimate, we need to weight the model predictions for the different subgroups by the actual frequency of these subgroups. This idea can be expressed as:
 
 $$
 \theta^{MRP} = \frac{\sum N_{\rm subgroup} \theta_{\rm subgroup}}{\sum N_{\rm subgroup}}
@@ -547,7 +546,6 @@ knitr::asis_output('
 ')
 ```
 ```{r, include=knitr::is_latex_output(), echo=FALSE}
-#knitr::asis_output('\\begin{tcolorbox}[colback=blue!5!white,colframe=blue!75!black,title=Show model explanation]')
 knitr::asis_output('\\tcolorbox[title=Code explanation, enhanced jigsaw, breakable, colframe = blue!40!black, colback = blue!1!white, fonttitle=\\large, before skip=30pt, after skip=30pt]')
 ```
  
@@ -591,7 +589,7 @@ cat("Unadjusted 60,000-respondent survey mean, sd: ", (round(full_cces_estimate,
 
 In general, we see that both the unadjusted sample estimate and the MRP estimate are quite close to the results of the full survey. In other words, MRP is not providing a notable advantage against the unadjusted sample national estimates. However, it is important to clarify that we were somewhat lucky in obtaining this result as a product of using data from the CCES, a high quality survey that intends to be representative (and appears to be, at least with respect to the variables considered in our poststratification table). Many real-world surveys are not as representative relative to the variables considered in the poststratification step, and in these cases MRP will help correcting the biased estimates from the unadjusted survey. We will see an example of this in section 4, where we exemplify how MRP adjusts a clearly biased sample.
 
-### Estimation for sub-national units {.unnumbered #estimational-subnational-level}
+### Estimation for subnational units {.unnumbered #estimational-subnational-level}
 
 As we mentioned, small area estimation is one of the main applications of MRP. In this case, we will get an estimate of the support for employer's right to decline coverage of abortions per state:
 
@@ -627,17 +625,16 @@ for(i in 1:nrow(states_df)) {
   k_filtered <- poststrat_df[filtering_condition, ]$n
 
   # Poststratification step
-  mrp_estimates_vector <- state_epred_mat %*% k_filtered / sum(k_filtered)
+  mrp_estimates_vector_sub <- state_epred_mat %*% k_filtered / sum(k_filtered)
   
   # MRP estimate for state in row i 
-  states_df$mrp_estimate[i] <- mean(mrp_estimates_vector)
-  states_df$mrp_estimate_se[i] <- sd(mrp_estimates_vector)
+  states_df$mrp_estimate[i] <- mean(mrp_estimates_vector_sub)
+  states_df$mrp_estimate_se[i] <- sd(mrp_estimates_vector_sub)
   
   # 5,000-sample survey unadjusted estimate for state in row i
   states_df$sample_cces_estimate[i] <- mean(
     filter(cces_df, state==states_df$state[i])$abortion)
-  states_df$n_sample[i] <- nrow(filter(cces_df, 
-                                                state==states_df$state[i]))
+  states_df$n_sample[i] <- nrow(filter(cces_df, state==states_df$state[i]))
   states_df$sample_cces_estimate_se[i] <- get_se_bernoulli(
     states_df$sample_cces_estimate[i], states_df$n_sample[i])
   
@@ -675,14 +672,14 @@ compare1 <- ggplot(data=states_df) +
         legend.title=element_text(size=10),
         legend.text=element_text(size=10))
 
-compare2 <- ggplot(data = states_df)+
+compare2 <- ggplot(data = data.frame())+
   geom_point(aes(y=sample_cces_estimate[1], x = .25), color = "#E37B1C") +
   geom_errorbar(data=states_df, aes(y = sample_cces_estimate[1], 
                 x = .25,
                 ymin = sample_cces_estimate[1] - 2*sample_cces_estimate[2],
                 ymax = sample_cces_estimate[1] + 2*sample_cces_estimate[2]),
                 width = 0, color = "#E37B1C") +
-  geom_text(data = data.frame(), aes(x = Inf, y = sample_cces_estimate[1] + 0.06, label = "Unadjusted Sample"), 
+  geom_text(aes(x = Inf, y = sample_cces_estimate[1] + 0.06, label = "Unadjusted Sample"), 
             hjust = -.05, size = 4, color = "#E37B1C") +
   scale_y_continuous(breaks=c(0,.25,.5,.75,1),
                      labels=c("0%","25%","50%","75%","100%"),
@@ -730,14 +727,14 @@ compare1 <- ggplot(data=states_df) +
         legend.title=element_text(size=10),
         legend.text=element_text(size=10))
 
-compare2 <- ggplot(data = states_df)+
+compare2 <- ggplot(data = data.frame())+
   geom_point(aes(y=sample_cces_estimate[1], x = .25), color = "#E37B1C") +
   geom_errorbar(data=states_df, aes(y = sample_cces_estimate[1], 
                 x = .25,
                 ymin = sample_cces_estimate[1] - 2*sample_cces_estimate[2],
                 ymax = sample_cces_estimate[1] + 2*sample_cces_estimate[2]),
                 width = 0, color = "#E37B1C") +
-  geom_text(data = data.frame(), aes(x = Inf, y = sample_cces_estimate[1]+0.06, label = "Unadjusted Sample"), 
+  geom_text(aes(x = Inf, y = sample_cces_estimate[1]+0.06, label = "Unadjusted Sample"), 
             hjust = -.05, size = 4, color = "#E37B1C") +
   geom_point(aes(y = mrp_estimate[1], x = .75), color = "#7B1CE3") +
   geom_errorbar(aes(y = mrp_estimate[1], 
@@ -797,14 +794,14 @@ compare1 <- ggplot(data=states_df) +
         legend.title=element_text(size=10),
         legend.text=element_text(size=10))
 
-compare2 <- ggplot(data = states_df) +
+compare2 <- ggplot(data = data.frame()) +
   geom_point(aes(y=sample_cces_estimate[1], x = .25), color = "#E37B1C") +
   geom_errorbar(data=states_df, aes(y = sample_cces_estimate[1], 
                 x = .25,
                 ymin = sample_cces_estimate[1] - 2*sample_cces_estimate[2],
                 ymax = sample_cces_estimate[1] + 2*sample_cces_estimate[2]),
                 width = 0, color = "#E37B1C") +
-  geom_text(data = data.frame(), aes(x = Inf, y = sample_cces_estimate[1]+0.06, label = "Unadjusted Sample"), 
+  geom_text(aes(x = Inf, y = sample_cces_estimate[1]+0.06, label = "Unadjusted Sample"), 
             hjust = -.05, size = 4, color = "#E37B1C") +
   geom_point(aes(y = mrp_estimate[1], x = .75), color = "#7B1CE3") +
   geom_errorbar(aes(y = mrp_estimate[1], 
@@ -868,7 +865,7 @@ ggplot(states_map, aes(x = x, y = y, group = group)) +
 
 ```
 
-### Estimation for subgroups within sub-national units {.unnumbered #estimational-subgroup-level}
+### Estimation for subgroups within subnational units {.unnumbered #estimational-subgroup-level}
 
 MRP can also be used to obtain estimates for more complex cases, such as subgroups within states. For instance, we can study support for declining coverage of abortions by state and ethnicity within state. For clarity, we order the races according to their support for the statement.
 
@@ -895,7 +892,7 @@ for(i in 1:nrow(subgroups_df)) {
 }
 ```
 
-```{r, message=FALSE, warning=FALSE, echo=FALSE, cache=FALSE, fig.height=2.35, fig.width=11, fig.align = "center"}
+```{r, message=FALSE, warning=FALSE, echo=FALSE, cache=FALSE, fig.height=1.9, fig.width=9, fig.align = "center"}
 # Load map and merge data
 states_map <- us_map(regions = "states")
 subgroups_df_melted <- subgroups_df %>% select(state, mrp_subgroup_estimate, eth)
@@ -1075,18 +1072,18 @@ fit <- readRDS("fit_mrp_2.rds")
 ```{r, cache = TRUE, echo = FALSE, warning=FALSE, message=FALSE}
 # National
 epred_mat <- posterior_epred(fit, newdata = poststrat_df, draws = 1000)
-biased_mrp_estimates_vector <- epred_mat %*% poststrat_df$n / sum(poststrat_df$n)
-biased_mrp_estimate <- c(mean = mean(biased_mrp_estimates_vector), sd = sd(biased_mrp_estimates_vector))
-biased_cces_estimate <- c(mean = mean(cces_biased_df$abortion), se = get_se_bernoulli(mean(cces_biased_df$abortion), nrow(cces_biased_df)))
+mrp_estimates_vector <- epred_mat %*% poststrat_df$n / sum(poststrat_df$n)
+mrp_estimate <- c(mean = mean(mrp_estimates_vector), sd = sd(mrp_estimates_vector))
+cces_estimate <- c(mean = mean(cces_biased_df$abortion), se = get_se_bernoulli(mean(cces_biased_df$abortion), nrow(cces_biased_df)))
 full_cces_estimate <- c(mean = mean(cces_all_df$abortion), se = get_se_bernoulli(mean(cces_all_df$abortion), nrow(cces_all_df)))
 
 # By state
 states_df <- data.frame(
   state = state_abb,
-  biased_mrp_estimate = NA,
-  biased_mrp_estimate_se = NA,
-  biased_cces_estimate = NA,
-  biased_cces_estimate_se = NA,
+  mrp_estimate = NA,
+  mrp_estimate_se = NA,
+  cces_estimate = NA,
+  cces_estimate_se = NA,
   full_cces_estimate = NA,
   full_cces_estimate_se = NA,
   n_sample = NA,
@@ -1100,13 +1097,13 @@ for(i in 1:nrow(states_df)) {
   mrp_estimates_vector <- state_epred_mat %*% k_filtered / sum(k_filtered)
   
   # MRP estimate
-  states_df$biased_mrp_estimate[i] <- mean(mrp_estimates_vector)
-  states_df$biased_mrp_estimate_se[i] <- sd(mrp_estimates_vector)
+  states_df$mrp_estimate[i] <- mean(mrp_estimates_vector)
+  states_df$mrp_estimate_se[i] <- sd(mrp_estimates_vector)
   
   # Biased 5,000-sample survey unadjusted estimate
-  states_df$biased_cces_estimate[i] <- mean(filter(cces_biased_df, state==states_df$state[i])$abortion)
+  states_df$cces_estimate[i] <- mean(filter(cces_biased_df, state==states_df$state[i])$abortion)
   states_df$n_sample[i] <- nrow(filter(cces_biased_df, state==states_df$state[i]))
-  states_df$biased_cces_estimate_se[i] <- get_se_bernoulli(states_df$biased_cces_estimate[i], states_df$n_sample[i])
+  states_df$cces_estimate_se[i] <- get_se_bernoulli(states_df$cces_estimate[i], states_df$n_sample[i])
   
   # Full 60,000-person survey unadjusted estimate
   states_df$full_cces_estimate[i] <- mean(filter(cces_all_df, state==states_df$state[i])$abortion)
@@ -1122,9 +1119,9 @@ As expected, our remarkably nonrepresentative sample produces estimates that are
 states_df$state <- fct_reorder(states_df$state, states_order)
 
 compare1 <- ggplot(data=states_df) +
-  geom_point(aes(x = state, y = biased_mrp_estimate), color = "#E37B1C") +
-  geom_errorbar(aes(ymin=biased_mrp_estimate - 2*biased_mrp_estimate_se,
-                    ymax=biased_mrp_estimate + 2*biased_mrp_estimate_se,
+  geom_point(aes(x = state, y = mrp_estimate), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=mrp_estimate - 2*mrp_estimate_se,
+                    ymax=mrp_estimate + 2*mrp_estimate_se,
                     x=state), alpha=.5, width = 0, color = "#E37B1C") +
   scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
                      labels=c("0%","25%","50%","75%","100%"), 
@@ -1139,14 +1136,14 @@ compare1 <- ggplot(data=states_df) +
         legend.title=element_text(size=10),
         legend.text=element_text(size=10))
 
-compare2 <- ggplot(data = states_df)+
-  geom_point(aes(y = biased_cces_estimate[1], x = .25), color = "#E37B1C") +
-  geom_errorbar(data = states_df, aes(y = biased_cces_estimate[1], 
+compare2 <- ggplot(data = data.frame())+
+  geom_point(aes(y = cces_estimate[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data = states_df, aes(y = cces_estimate[1], 
                 x = .25,
-                ymin = biased_cces_estimate[1] - 2*biased_cces_estimate[2],
-                ymax = biased_cces_estimate[1] + 2*biased_cces_estimate[2]),
+                ymin = cces_estimate[1] - 2*cces_estimate[2],
+                ymax = cces_estimate[1] + 2*cces_estimate[2]),
                 width = 0, color = "#E37B1C") +
-  geom_text(data = data.frame(), aes(x = Inf, y = biased_cces_estimate[1] + 0.06, label = "Unadjusted Sample"), 
+  geom_text(aes(x = Inf, y = cces_estimate[1] + 0.06, label = "Unadjusted Sample"), 
             hjust = -.05, size = 4, color = "#E37B1C") +
   scale_y_continuous(breaks=c(0,.25,.5,.75,1),
                      labels=c("0%","25%","50%","75%","100%"),
@@ -1173,13 +1170,13 @@ MRP seems to partially correct for the nonrepresentative sample:
 
 ```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=10, fig.align = "center", cache=FALSE}
 compare1 <- ggplot(data=states_df) +
-  geom_point(aes(x = state, y = biased_cces_estimate), color = "#E37B1C") +
-  geom_errorbar(aes(ymin=biased_cces_estimate - 2*biased_cces_estimate_se,
-                    ymax=biased_cces_estimate + 2*biased_cces_estimate_se,
+  geom_point(aes(x = state, y = cces_estimate), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=cces_estimate - 2*cces_estimate_se,
+                    ymax=cces_estimate + 2*cces_estimate_se,
                     x=state), alpha=.5, width = 0, color = "#E37B1C") +
-  geom_point(data = states_df, aes(x=state, y=biased_mrp_estimate), color = "#7B1CE3") +
-  geom_errorbar(data = states_df, aes(ymin=biased_mrp_estimate - 2*biased_mrp_estimate_se, 
-                                             ymax=biased_mrp_estimate + 2*biased_mrp_estimate_se, 
+  geom_point(data = states_df, aes(x=state, y=mrp_estimate), color = "#7B1CE3") +
+  geom_errorbar(data = states_df, aes(ymin=mrp_estimate - 2*mrp_estimate_se, 
+                                             ymax=mrp_estimate + 2*mrp_estimate_se, 
                                              x=state), alpha=.5, width = 0, color = "#7B1CE3") +
   scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
                      labels=c("0%","25%","50%","75%","100%"), 
@@ -1194,22 +1191,22 @@ compare1 <- ggplot(data=states_df) +
         legend.title=element_text(size=10),
         legend.text=element_text(size=10))
 
-compare2 <- ggplot(data = states_df)+
-  geom_point(aes(y=biased_cces_estimate[1], x = .25), color = "#E37B1C") +
-  geom_errorbar(data=states_df, aes(y = biased_cces_estimate[1], 
+compare2 <- ggplot(data = data.frame())+
+  geom_point(aes(y=cces_estimate[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data=states_df, aes(y = cces_estimate[1], 
                 x = .25,
-                ymin = biased_cces_estimate[1] - 2*biased_cces_estimate[2],
-                ymax = biased_cces_estimate[1] + 2*biased_cces_estimate[2]),
+                ymin = cces_estimate[1] - 2*cces_estimate[2],
+                ymax = cces_estimate[1] + 2*cces_estimate[2]),
                 width = 0, color = "#E37B1C") +
-  geom_text(data = data.frame(), aes(x = Inf, y = biased_cces_estimate[1]+0.06, label = "Unadjusted Sample"), 
+  geom_text(aes(x = Inf, y = cces_estimate[1]+0.06, label = "Unadjusted Sample"), 
             hjust = -.05, size = 4, color = "#E37B1C") +
-  geom_point(aes(y = biased_mrp_estimate[1], x = .75), color = "#7B1CE3") +
-  geom_errorbar(aes(y = biased_mrp_estimate[1], 
+  geom_point(aes(y = mrp_estimate[1], x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = mrp_estimate[1], 
                 x = .75, 
-                ymin = biased_mrp_estimate[1] - 2*biased_mrp_estimate[2],
-                ymax = biased_mrp_estimate[1] + 2*biased_mrp_estimate[2]),
+                ymin = mrp_estimate[1] - 2*mrp_estimate[2],
+                ymax = mrp_estimate[1] + 2*mrp_estimate[2]),
                 width = 0, color = "#7B1CE3") +
-  geom_text(data = data.frame(), aes(x = Inf, y = biased_mrp_estimate[1]+0.02, label = "Sample with MRP"), 
+  geom_text(data = data.frame(), aes(x = Inf, y = mrp_estimate[1]+0.02, label = "Sample with MRP"), 
             hjust = -.05, size = 4, color = "#7B1CE3") +
   scale_y_continuous(breaks=c(0,.25,.5,.75,1),
                      labels=c("0%","25%","50%","75%","100%"),
@@ -1232,17 +1229,17 @@ bayesplot_grid(compare1,compare2,
                grid_args = list(nrow=1, widths = c(5,1.4)))
 ```
 
-Lastly, we see how the MRP national and sub-national estimates based on the nonrepresentative sample are, overall, much closer to the 60,000-person survey than the biased unadjusted sample estimates.
+Lastly, we see how the MRP national and subnational estimates based on the nonrepresentative sample are, overall, much closer to the 60,000-person survey than the biased unadjusted sample estimates.
 
 ```{r, warning=FALSE, echo=FALSE, message=FALSE, fig.height=3.5, fig.width=10, fig.align = "center", results = 'hide', cache=FALSE}
 compare1 <- ggplot(data=states_df) +
-  geom_point(aes(x=state, y=biased_cces_estimate), color = "#E37B1C") +
-  geom_errorbar(aes(ymin=biased_cces_estimate - 2*biased_cces_estimate_se,
-                    ymax=biased_cces_estimate + 2*biased_cces_estimate_se,
+  geom_point(aes(x=state, y=cces_estimate), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=cces_estimate - 2*cces_estimate_se,
+                    ymax=cces_estimate + 2*cces_estimate_se,
                     x=state), alpha=.5, width = 0, color = "#E37B1C") +
-  geom_point(data=states_df, aes(x=state, y=biased_mrp_estimate), color = "#7B1CE3") +
-  geom_errorbar(data=states_df, aes(ymin=biased_mrp_estimate - 2*biased_mrp_estimate_se, 
-                                             ymax=biased_mrp_estimate + 2*biased_mrp_estimate_se, 
+  geom_point(data=states_df, aes(x=state, y=mrp_estimate), color = "#7B1CE3") +
+  geom_errorbar(data=states_df, aes(ymin=mrp_estimate - 2*mrp_estimate_se, 
+                                             ymax=mrp_estimate + 2*mrp_estimate_se, 
                                              x=state), alpha=.5, width = 0, color = "#7B1CE3") +
   geom_point(aes(x=state, y=full_cces_estimate), color = "#1CE37B") +
   geom_errorbar(data=states_df, aes(ymin=full_cces_estimate - 2*full_cces_estimate_se, 
@@ -1261,22 +1258,22 @@ compare1 <- ggplot(data=states_df) +
         legend.title=element_text(size=10),
         legend.text=element_text(size=10))
 
-compare2 <- ggplot(data = states_df) +
-  geom_point(aes(y=biased_cces_estimate[1], x = .25), color = "#E37B1C") +
-  geom_errorbar(data=states_df, aes(y = biased_cces_estimate[1], 
+compare2 <- ggplot(data = data.frame()) +
+  geom_point(aes(y=cces_estimate[1], x = .25), color = "#E37B1C") +
+  geom_errorbar(data=states_df, aes(y = cces_estimate[1], 
                 x = .25,
-                ymin = biased_cces_estimate[1] - 2*biased_cces_estimate[2],
-                ymax = biased_cces_estimate[1] + 2*biased_cces_estimate[2]),
+                ymin = cces_estimate[1] - 2*cces_estimate[2],
+                ymax = cces_estimate[1] + 2*cces_estimate[2]),
                 width = 0, color = "#E37B1C") +
-  geom_text(data = data.frame(), aes(x = Inf, y = biased_cces_estimate[1]+0.06, label = "Unadjusted Sample"), 
+  geom_text(aes(x = Inf, y = cces_estimate[1]+0.06, label = "Unadjusted Sample"), 
             hjust = -.05, size = 4, color = "#E37B1C") +
-  geom_point(aes(y = biased_mrp_estimate[1], x = .75), color = "#7B1CE3") +
-  geom_errorbar(aes(y = biased_mrp_estimate[1], 
+  geom_point(aes(y = mrp_estimate[1], x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = mrp_estimate[1], 
                 x = .75, 
-                ymin = biased_mrp_estimate[1] - 2*biased_mrp_estimate[2],
-                ymax = biased_mrp_estimate[1] + 2*biased_mrp_estimate[2]),
+                ymin = mrp_estimate[1] - 2*mrp_estimate[2],
+                ymax = mrp_estimate[1] + 2*mrp_estimate[2]),
                 width = 0, color = "#7B1CE3") +
-  geom_text(data = data.frame(), aes(x = Inf, y = biased_mrp_estimate[1]+0.02, label = "Sample with MRP"), 
+  geom_text(data = data.frame(), aes(x = Inf, y = mrp_estimate[1]+0.02, label = "Sample with MRP"), 
             hjust = -.05, size = 4, color = "#7B1CE3") +
   scale_y_continuous(breaks=c(0,.25,.5,.75,1),
                      labels=c("0%","25%","50%","75%","100%"),
@@ -1346,7 +1343,7 @@ Stan uses Hamiltonian Monte Carlo to explore the posterior distribution. In some
 1.  Exploring the posterior distribution is somewhat similar as cartographing a mountainous terrain, and a divergent transition is similar to falling down a very steep slope, with the consequence of not being able to correctly map that area. In this analogy, what the cartographer could do is moving through the steep slope giving smaller steps to avoid falling. In Stan, the step size is set up automatically, but we can change a parameter called `adapt_delta` that controls the step size. By default we have that `adapt_delta = .95`, but we can increase that number to make Stan take smaller steps, which should reduce the number of divergent transitions. The maximum value we can set for `adapt_delta` is close (but necessarely less than) 1, with the downside that an increase implies a somewhat slower exploration of the posterior distribution. Usually, an `adapt_delta = 0.99` works well if we only have a few divergent transitions.
 
 2. However, there are cases in which increasing `adapt_delta` is not sufficient, and divergent transitions still occur. In this case, introducing weakly informative priors can be extremelly helpful. Although `rstanarm` provides by default weakly informative priors, in most applications these tend to be too weak. By using more reasonable priors, we make the posterior distribution easier to explore.
-    + The priors for the scaled coefficients are ${\rm Normal}(0, 2.5)$. When the coefficients are not scaled, `rstanarm` will automatically adjust the scaling of the priors as detailed in the [prior vignette](https://cran.r-project.org/web/packages/rstanarm/vignettes/priors.html). In most cases, and particularly when we find computational issues, it is reasonable to give stronger priors on the scaled coefficients such as ${\rm Normal}(0, 1)$.
+    + The priors for the scaled coefficients are ${\rm normal}(0, 2.5)$. When the coefficients are not scaled, `rstanarm` will automatically adjust the scaling of the priors as detailed in the [prior vignette](https://cran.r-project.org/web/packages/rstanarm/vignettes/priors.html). In most cases, and particularly when we find computational issues, it is reasonable to give stronger priors on the scaled coefficients such as ${\rm normal}(0, 1)$.
     + Multilevel models with multiple group-level standard deviation parameters (e.g. $\sigma^{\rm age}$, $\sigma^{\rm eth}$, $\sigma^{\rm educ.eth}$, etc.) tend to be hard to estimate and sometimes present serious computational issues. The default prior for the covariance matrix is `decov(reg. = 1, conc. = 1, shape = 1, scale = 1)`. However, in a varying-intercept model such as this one (i.e. with structure `(1 | a) + (1 | b) + ... + (1 | n)`) the group-level standard deviations are independent of each other, and therefore the prior is simply a gamma distribution with some shape and scale. Consequently, `decov(shape = 1, scale = 1)` implies a weakly informative prior ${\rm Gamma(shape = 1, scale = 1)} = {\rm Exponential(scale = 1)}$ on each group-level standard deviation. This is too weak in most situations, and using something like ${\rm Exponential(scale = 0.5)}$ can be crucial for stabilizing computation.
   
 Therefore, something like this has much fewer chances of running into computational issues than simply leaving the defaults:

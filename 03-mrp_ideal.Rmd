@@ -1,0 +1,2401 @@
+
+# Ideal Point MRP
+
+```{r, include=FALSE}
+library(data.table)
+library(dplyr)
+library(forcats)
+library(tidyr)
+library(reshape2)
+library(stringr)
+library(ggplot2)
+library(rstan)
+library(rstanarm)
+library(usmap)
+library(gridExtra)
+library(scales)
+library(kableExtra)
+library(readr)
+
+#Sys.setenv(LOCAL_CPPFLAGS = '-march=corei7 -mtune=corei7')
+options(mc.cores = parallel::detectCores(logical = FALSE))
+```
+
+This chapter introduces ideal point MRP, an alternative to standard MRP that can be used when a survey contains at least two related questions that reflect the same attitude or ability. We will present how this method can be used for obtaining sub-national estimates of the latent attitude and also for improving estimates with respect to the individual questions.
+
+## Introduction and Literature
+
+### The ABC of IRT
+
+Being developed in educational research, ideal point models (also called Item Response Theory models) assume that each participant $j$ has a latent ability $\alpha_j$. In the context of a math exam, this ability parameter reflects how good a certain student is at math. Of course, $\alpha_j$ is said to be latent because we do not observe it directly, but only through the student's answers to $k$ math-related questions. The ideal point model maps the unobserved ability $\alpha_j$ to the probability that subject $j$ answers correctly question $k$:
+
+$$
+P(y = 1) = logit^{-1}(\alpha_j - \beta_k)
+$$
+The probability of correctly answering question $k$ does not only depend on the student's ability $\alpha_j$, but also on the question difficulty $\beta_k$. Let's imagine a student with $\alpha_1 = 2$ that answers two questions with difficulties $\beta_1 = 0$ and $\beta_2 = 3$. In the case of her responding to the first question, we have that there is a $logit^{-1}(2 - 0) = 88\%$ probability of answering it correctly. In the case of the second question she has a lower probability of getting it right: $logit^{-1}(2 - 3) = 27\%$. This is because the second question is much more difficult than the first. If we now take a second student with a lower ability $\alpha_2 = -1.5$, his probabilities of getting these questions correctly are $logit^{-1}(-1.5 - 0) = 18\%$ and $logit^{-1}(-1.5 - 3) = 1\%$.
+
+In some situations not every individual encounters every question. In this case, the ideal point model can be written as $P(y_i = 1) = logit^{-1}(\alpha_{j[i]} - \beta_{k[i]})$. In this case, the index $i$ corresponds to the question $k[i]$ responded by the student $j[i]$. Although we will use this notation, in the data we will use for this case study all individuals have responded to all of the questions considered.
+
+The above model, which is usually referred as Rasch model or one-parameter model, assumes each question is equally relevant (or discriminatory) in terms of measuring the latent ability $\alpha_j$. Although in educational testing it is desirable to construct questions that are able to discriminate between a student with a low ability and another one with high ability, in practice not all items achieve this to the same extent. This is exactly what the discrimination parameter $\gamma_k$ reflects. Thus, this extended version that is often called two-parameter ideal point model becomes:
+
+$$
+P(y_i = 1) = \gamma_{k[i]} (logit^{-1}(\alpha_{j[i]} - \beta_{k[i]}))
+$$
+
+Let's consider two questions with equal difficulty $\beta_1 = 0$ and $\beta_2 = 0$, but with different discrimination $\gamma_1 = 0.1$ and $\gamma_2 = 2.5$. The high-ability student described previously has a $logit^{-1}(0.1 \times (2 - 0) = 55\%$ probability of responding correctly to the first question, while the low-ability participant has a $logit^{-1}(0.1 \times (-1.5 - 0) = 46\%$ chance. These probabilities are close because this question has a low discrimination parameter, and is therefore not particularly good at distinguishing between high-ability and low-ability individuals. Conversely, the second question has a high discrimination parameter, and therefore the probabilities for these two students are $logit^{-1}(1.7 \times (2 - 0) = 97\%$ and $logit^{-1}(1.7 \times (-1.5 - 0) = 7\%$, respectively.
+
+It is sometimes useful to think about the ideal point model as a function that transforms a latent ability $\alpha_j$ into the probably of answering correctly a certain question. This mapping depends on the characteristics of the question, which in the case of the two-parameter ideal point model are the difficulty $\beta_k$ and the discrimination $\gamma_k$. We can visualize how different values for $\beta_k$ and $\gamma_k$ influence this transformation.
+
+```{r, fig.height= 6, fig.width=14, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+plot_prob <- function(gamma = 1, beta = 0, sequence = seq(-5, 5, by = 0.01)){
+  ggplot(data=data.frame(seq = sequence)) +
+    geom_hline(aes(yintercept = 0)) +
+    geom_line(aes(x=seq, y=plogis(gamma*(seq - beta)))) +
+    scale_y_continuous(limits = c(0, 1),
+                       expand=c(0,0)) +
+    theme_bw() +
+    labs(x="",y="")+
+    theme(legend.position="none",
+          axis.title=element_text(size=10),
+          axis.text.y=element_text(size=10),
+          axis.text.x=element_text(size=5, vjust=0.3),
+          legend.title=element_text(size=10),
+          legend.text=element_text(size=10)) + 
+    ggtitle(latex2exp::TeX(paste0("$\\gamma_k = $", gamma, "\t", "$\\beta_k = $", beta))) + 
+    xlab(latex2exp::TeX("$\\alpha_j$"))
+}
+
+grid.arrange(plot_prob(gamma = 0.5, beta = 1), plot_prob(gamma = 1, beta = 1), plot_prob(gamma = 2, beta = 1), 
+             plot_prob(gamma = 0.5, beta = 0), plot_prob(gamma = 1, beta = 0), plot_prob(gamma = 2, beta = 0),
+             plot_prob(gamma = 0.5, beta = -1), plot_prob(gamma = 1, beta = -1), plot_prob(gamma = 2, beta = -1), 
+             nrow = 3, ncol = 3)
+```
+
+#### Multilevel structure and identification
+
+The parameters used in the ideal point model are often assumed to follow a multilevel structure that assigns normal distributions to the abilities, difficulties, and discriminations:
+
+$$
+\begin{align}
+\alpha_j &\sim \text{normal}(\mu_{\alpha}, \sigma_{\sigma}) \text{ for } j = 1, ..., J \\
+\beta_k &\sim \text{normal}(\mu_{\beta}, \sigma_{\beta}) \text{ for } k = 1, ..., K \\
+\gamma_k &\sim \text{normal}(\mu_{\gamma}, \sigma_{\gamma}) \text{ for } k = 1, ..., K \\ 
+\end{align}
+$$
+
+However, the two-parameter ideal point model is not identified. In particular, it suffers from three problems (see @bafumi2005practical for a more detailed discussion on identification problems and solutions):
+
+1. Additive aliasing: Adding a constant to $\alpha_j$ and $\beta_k$ will not change its predictions.
+2. Multiplicative aliasing: Similarly, multiplying $\gamma_k$ by a constant and dividing $(\alpha_j - \beta_j)$ by the same constant will keep the predictions unchanged.
+3. Reflection invariance: Lastly, multiplying the ability, difficulty, and discrimination parameter by -1 will also result in identical predictions.
+
+The first two issues can be resolved by creating standardized parameters $\alpha_j^{\rm adj} = \frac{\alpha_j - \bar{\alpha}}{s_{\alpha}}$, $\beta_k^{\rm adj} = \frac{\beta_k - \bar{\alpha}}{s_{\alpha}}$, and $\gamma_k^{\rm adj} = \gamma_k s_{\alpha}$. The new ability, difficulty, and discrimination parameters are well defined and preserve the likelihood as $P(y_i = 1) = logit^{-1}(\gamma_{k[i]}(\alpha_{j[i]} - \beta_{k[i]})) = logit^{-1}(\gamma_{k[i]}^{\rm adj}(\alpha_{j[i]}^{\rm adj} - \beta_{k[i]}^{\rm adj}))$. Reflection invariance can be avoided by restricting $\gamma_k \gt 0$ (and consequently $\mu_{\gamma} \gt 0$ and also $\gamma_k^{adj} \gt 0$), which in turn requires precoding the questions so they are in the same direction (e.g. indicating conservative positions).
+
+#### Including predictors for $\alpha_j$
+
+The mode we have described assumes that the abilities $\alpha_j$ follow a normal distribution centered at the population average ability $\mu_{\alpha}$ with a standard deviation $\sigma_{\sigma}$. We can extend this by adding ability-level predictors, resulting in $\alpha_j \sim \text{normal}(\mu_{\alpha} + X \beta)$ where $\mu_{\alpha}$ now represents the regression intercept.
+
+### Ideal point models and estimating public opinion
+
+Until now we have used the example of a math test. However, beyond educational settings an ideal point model can be used to reflect other situations in which a latent characteristic determines a dichotomous response. In the Political Science literature, these models have been famously used to reflect the ideological position of legislators based on their roll call voting records (@clinton2004statistical). Similarly, we can use the survey respondents support for different statements as reflecting a latent attitude based on a series of survey questions. There have been two main bodies of work that have combined ideal-point models and MRP.
+
+@tausanovitch2013ideal follow a two-step process to estimate policy preferences across states and cities in the US. First, they fit a unidimensional ideal point model such as the one described by @clinton2004statistical based on dichotomous responses from the CCES and the ACS, obtaining estimates of the liberalness-conservativeness for 270,000 Americans. Instead of using dissaggregation, the second step involves using an MRP approach that instead of considering the response to any individual question as the outcome they predict this estimated ideal point for each participant. In a later work, @tausanovitch2014representation correlate the city-level policy preference estimates obtained using this method with the policies enacted at the municipal level, finding a clear correspondence.
+
+In a related line of work, @caughey2015dynamic use a conceptually different approach in order to estimate latent abilities over time. First, they model survey responses not at the individual level, but rather at the level of subpopulation groups defined by demographic and geographic characteristics. This has the advantage of using highly sparse data without requiring ‘linking’ questions that bridge across all the surveys. Second, they extend the model to borrow information across time, which allows to create time-specific estimates of average group opinion. They use this dynamic group-level IRT framework to estimate policy liberalism at the U.S. state level in each year between 1972 and 2012 (for other applications, see @bergquist2019does and @bergquist2019does).
+
+## A Two-Parameter IRT Model with Latent Multilevel Regression
+
+In the previous two chapters we have only considered one of the questions in the CCES. However, this survey includes six support/oppose statements about abortion:
+
+* CC18_321a: Always allow a woman to obtain an abortion as a matter of choice.
+* CC18_321b: Permit abortion ONLY in case of rape, incest or when the woman’s life is in danger.
+* CC18_321c: Ban abortions after the 20th week of pregnancy.
+* CC18_321d: Allow employers to decline coverage of abortions in insurance plans.
+* CC18_321e: Prohibit the expenditure of funds authorized or appropriated by federal law for any abortion.
+* CC18_321f: Make abortions illegal in all circumstances.
+
+We can use a two-parameter logistic item response model with a latent (multilevel) regression to model $k$ questions based on $j$ respondents:
+
+$$
+\begin{equation*}
+P(y_i = 1) = logit^{-1}(\gamma_{k[i]}^{adj}(\alpha_{j[i]}^{adj} - \beta_{k[i]}^{adj}))
+\end{equation*}
+$$
+where:
+
+$$
+\begin{align*}
+\alpha_j &\sim {\rm normal}(\mu^{\alpha} + A_{\rm s[j]}^{\rm state}
++ A_{\rm a[j]}^{\rm age}
++ A_{\rm r[j]}^{\rm ethnicity}
++ A_{\rm e[j]}^{\rm education}
++ B^{\rm male} \cdot {\rm Male}_{\rm j}, \sigma^{\alpha}) {\rm \ for} \ j = 1,...,J \\
+\beta_k &\sim {\rm normal}(\mu^{\beta}, \sigma^{\beta}) {\rm \ for} \ k = 1,...,K \\
+\gamma_k &\sim {\rm normal_{+}}(\mu^{\gamma}, \sigma^{\gamma}) {\rm \ for} \ k = 1,...,K
+\end{align*}
+$$
+and:
+
+$$
+\begin{align*}
+A_{\rm s}^{\rm state} &\sim {\rm normal}(A^{\rm region}_{n[s]} + B^{\rm repvote} \cdot {\rm RepVote}_{\rm s}, \sigma^{\rm state}) \textrm{ for s = 1,...,50}\\
+A_{\rm a}^{\rm age} & \sim {\rm normal}(0,\sigma^{\rm age}) \textrm{ for a = 1,...,6}\\
+A_{\rm r}^{\rm ethnicity} & \sim {\rm normal}(0,\sigma^{\rm ethnicity}) \textrm{ for r = 1,...,4}\\
+A_{\rm e}^{\rm education} & \sim {\rm normal}(0,\sigma^{\rm education}) \textrm{ for e = 1,...,5}\\
+A_{\rm n}^{\rm region} & \sim {\rm normal}(0,\sigma^{\rm region}) \textrm{ for a = 1,...,4}\\
+\end{align*}
+$$
+
+Note that our model is fundamentally different from the two-step approach used by @tausanovitch2013ideal. By first estimating the ideal point of each individual and then using MRP, their method is not propagating the uncertainty about the estimated ideal points into the final national or subnational estimates. Considering one of the essential advantages of Bayesian inference is to properly quantify uncertainty, we include the multilevel stage of the MRP within the ideal point model model. Thus, in our model the multilevel regression serves as a prior for $\alpha_j$. In this example we have included the same predictors introduced in first chapter, excluding the interaction terms for simplicity.
+
+As we already introduced in the previous section, identification can be achieved by transforming the ability, difficulty, and discrimination parameters by $\alpha_j^{\rm adj} = \frac{\alpha_j - \bar{\alpha}}{s_{\alpha}}$, $\beta_k^{\rm adj} = \frac{\beta_k - \bar{\alpha}}{s_{\alpha}}$, $\gamma_k^{\rm adj} = \gamma_k s_{\alpha}$. We also restricted $\gamma_k > 0$, which in turn requires precoding all the questions. The first question was reversed in order for all the outcomes to reflect a supporting perspective on restricting abortion rights. Therefore, a high ability $\alpha_j^{\rm adj}$ will represent a strong opposition to abortion.
+
+### Bayesian estimation
+
+In this initial experiment we analyzed the six abortion responses for a random sample of 5,000 CCES participants. The Stan code we used is shown below, and was fitted using 5 chains with 2,000 iterations (1,000 warmup).
+
+```{r, echo = FALSE, include = FALSE}
+clean_cces <- function(df, list_states_abb, list_states_num){
+
+  ## Abortion
+  df$abortion1 <- abs(df$CC18_321a-1)
+  df$abortion2 <- abs(df$CC18_321b-2)
+  df$abortion3 <- abs(df$CC18_321c-2)
+  df$abortion4 <- abs(df$CC18_321d-2)
+  df$abortion5 <- abs(df$CC18_321e-2)
+  df$abortion6 <- abs(df$CC18_321f-2)
+  
+  ## State -- factor
+  df$state <- df$inputstate
+  df$state <- factor(df$state, levels = list_states_num, labels = list_states_abb, ordered = TRUE)
+  
+  ## Gender -- dichotomous (-0.5 Female, +0.5 Male)
+  df$male <- abs(df$gender-2)-0.5
+  
+  ## ethnicity -- factor
+  df$ethnicity <- factor(df$race, 
+                    levels = 1:8, 
+                    labels = c("White", "Black", "Hispanic", "Asian", "Native American", "Mixed", "Other", "Middle Eastern"),
+                    ordered = TRUE)
+  df$ethnicity <- fct_collapse(df$ethnicity, "Other" = c("Asian", "Other", "Middle Eastern", "Mixed", "Native American"))
+  
+  ## Age -- cut into factor
+  df$age <- 2018 - df$birthyr
+  df$age <- cut(as.integer(df$age), breaks = c(0, 29, 39, 49, 59, 69, 120), 
+                labels = c("18-29","30-39","40-49","50-59","60-69","70+"),
+                ordered_result = TRUE)
+  
+  ## Education -- factor
+  df$educ <- factor(as.integer(df$educ), 
+                    levels = 1:6, 
+                    labels = c("No HS", "HS", "Some college", "Associates", "4-Year College", "Post-grad"), ordered = TRUE)
+  df$educ <- fct_collapse(df$educ, "Some college" = c("Some college", "Associates"))  
+  
+  ## ideology -- factor
+  df$ideology <- factor(as.integer(df$ideo5), 
+                    levels = 1:6, 
+                    labels = c("Very Liberal", "Liberal", "Moderate", "Conservative", "Very Conservative", "Not Sure"), ordered = TRUE)
+  
+  # Clean and remove NAs
+  df <- df %>% select(starts_with("abortion"), state, ethnicity, male, age, educ, ideology) %>%
+    drop_na(state, ethnicity, male, age, educ)
+  
+}
+
+df_all <- read_csv("data_public/chapter1/data/cces18_common_vv.csv.gz")
+list_states_abb <- datasets::state.abb
+list_states_num <- c(1,2,4,5,6,8,9,10,12,13,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,44,45,46,47,48,49,50,51,53,54,55,56)
+df_all <- clean_cces(df_all, list_states_abb, list_states_num)
+set.seed(1010)
+df <- df_all %>% sample_n(5000)
+df$subject <- 1:nrow(df)
+```
+
+```{r, warning=FALSE, include = FALSE}
+statelevel_predictors <- read_csv('data_public/chapter1/data/statelevel_predictors.csv')
+statelevel_predictors$region <- factor(statelevel_predictors$region, ordered = TRUE)
+statelevel_predictors$state <- factor(statelevel_predictors$state, levels = levels(df$state), ordered = TRUE)
+statelevel_predictors$repvote <- (statelevel_predictors$repvote - mean(statelevel_predictors$repvote))/sd(statelevel_predictors$repvote)
+df <- left_join(df, statelevel_predictors)
+
+```
+
+```{r, include = FALSE}
+postrat_df <- read_csv("data_public/chapter1/data/poststrat_df.csv")
+postrat_df$state <- factor(postrat_df$state, levels = list_states_abb, labels = list_states_abb, ordered = TRUE)
+postrat_df$ethnicity <- factor(postrat_df$eth, levels = levels(df$ethnicity), ordered = TRUE)
+postrat_df$age <- factor(postrat_df$age, levels = levels(df$age), ordered = TRUE)
+postrat_df$educ <- factor(postrat_df$educ, levels = levels(df$educ), ordered = TRUE)
+
+postrat_df  <- postrat_df %>% arrange(state, age, educ, ethnicity, male)
+```
+
+```{r, warning=FALSE, message=FALSE, eval=FALSE}
+# We skip reading the data, as the process is exactly the same as in chapter 1 except for reading six questions
+# in the CCES instead of only one. See Github repo for the entire code.
+
+# Melt df for Stan (drop_na removes the missing cases)
+df_melted <- df %>% select(starts_with("abortion"), state, ethnicity, age, educ, male, region, subject) %>% 
+  melt(id.vars = c("state", "age", "ethnicity", "educ", "male", "region", "subject")) %>% drop_na()
+
+# Prepare data for Stan 
+data <- list(J = length(unique(df_melted$subject)), 
+             K = length(unique(df_melted$variable)), 
+             N = nrow(df_melted), 
+             S = nrow(statelevel_predictors),
+             P = nrow(postrat_df),
+             participant = as.numeric(df_melted$subject), 
+             question = as.numeric(df_melted$variable), 
+             state = as.numeric(df_melted$state),
+             age = as.numeric(df_melted$age),
+             ethnicity = as.numeric(df_melted$ethnicity),
+             educ = as.numeric(df_melted$educ),
+             male = as.numeric(df_melted$male),
+             region = as.numeric(statelevel_predictors$region),
+             repvote = statelevel_predictors$repvote,
+             postrat_state = as.numeric(postrat_df$state),
+             postrat_age = as.numeric(postrat_df$age),
+             postrat_ethnicity = as.numeric(postrat_df$ethnicity),
+             postrat_educ = as.numeric(postrat_df$educ),
+             postrat_male = postrat_df$male,
+             y = df_melted$value)
+
+# Fit model
+fit_id <- stan_model("data_public/chapter3/idealpoint.stan")
+fit <- sampling(fit_id, data = data, iter = 2000, warmup = 1000, chains = 5,
+                   control = list(adapt_delta = 0.99, max_treedepth = 12),
+                   refresh = 25)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+# We skip reading the data, as the process is exactly the same as in chapter 1 except for reading six questions
+# in the CCES instead of only one. See Github repo for the entire code.
+
+# Melt df for Stan (drop_na removes the missing cases)
+df_melted <- df %>% select(starts_with("abortion"), state, ethnicity, age, educ, male, region, subject) %>% 
+  melt(id.vars = c("state", "age", "ethnicity", "educ", "male", "region", "subject")) %>% drop_na()
+
+# Prepare data for Stan 
+data <- list(J = length(unique(df_melted$subject)), 
+             K = length(unique(df_melted$variable)), 
+             N = nrow(df_melted), 
+             S = nrow(statelevel_predictors),
+             P = nrow(postrat_df),
+             participant = as.numeric(df_melted$subject), 
+             question = as.numeric(df_melted$variable), 
+             state = as.numeric(df_melted$state),
+             age = as.numeric(df_melted$age),
+             ethnicity = as.numeric(df_melted$ethnicity),
+             educ = as.numeric(df_melted$educ),
+             male = as.numeric(df_melted$male),
+             region = as.numeric(statelevel_predictors$region),
+             repvote = statelevel_predictors$repvote,
+             postrat_state = as.numeric(postrat_df$state),
+             postrat_age = as.numeric(postrat_df$age),
+             postrat_ethnicity = as.numeric(postrat_df$ethnicity),
+             postrat_educ = as.numeric(postrat_df$educ),
+             postrat_male = postrat_df$male,
+             y = df_melted$value)
+
+# Only train if train = TRUE; if not, load from fit_idealpoint.rds
+train = FALSE
+if(train){
+  fit_id <- stan_model("data_public/chapter3/idealpoint.stan")
+  fit <- sampling(fit_id, data = data, iter = 2000, warmup = 1000, chains = 5,
+                     control = list(adapt_delta = 0.99, max_treedepth = 12),
+                     refresh = 25)
+  saveRDS(fit, file = "data_public/chapter3/models/fit_idealpoint.rds")
+} else {
+  fit <- readRDS("data_public/chapter3/models/fit_idealpoint.rds")
+}
+
+# Extract draws as dataframe
+df_fit <- rstan::extract(fit)
+```
+
+### Initial Results
+
+We can visualize the posterior distribution for the estimated $\alpha_j^{adj}$ of the first five participants:
+
+```{r, echo=FALSE, fig.align = "center", fig.height=3.5, fig.width=6, warning=FALSE}
+toplot <- data.frame(df_fit$alpha_adj[,1:5])
+colnames(toplot) <- c("alpha1", "alpha2","alpha3","alpha4","alpha5")
+
+ggplot(data = melt(toplot, id.vars = NULL), aes(x = value)) + geom_histogram(bins = 80) + 
+  facet_grid(rows = vars(variable), labeller = labeller(variable = c(alpha1 = "alpha 1", 
+                                                                     alpha2 = "alpha 2",
+                                                                     alpha3 = "alpha 3",
+                                                                     alpha4 = "alpha 4",
+                                                                     alpha5 = "alpha 5"))) + 
+  theme_bw() + xlab("") + ylab("") +
+  xlim(c(-4, 4))
+```
+
+Conversely, we can visualize the distribution of $\alpha_j^{adj}$ for a random subset of the posterior draws:
+
+```{r, echo=FALSE, fig.align = "center", fig.height=3, fig.width=6, warning=FALSE}
+toplot <- data.frame(t(df_fit$alpha_adj[sample(nrow(df_fit$alpha_adj),size=50),]))
+ggplot(data = melt(toplot, id.vars = NULL), aes(x = value, color = variable)) + geom_density(alpha = 0.25) + scale_colour_grey() + guides(color=FALSE) + theme_bw() + ylab("") + xlab(latex2exp::TeX("$\\alpha^{adj}$")) + xlim(c(-3, 3))
+```
+
+As a first check that the ideal points $\alpha_j^{adj}$ estimated by the model are capturing a meaningful latent variable, we correlate them with the reported ideology in the CCES by each participant $j$. This results in a correlation of 0.53.
+
+```{r, echo=FALSE, eval=FALSE, warning=FALSE, message=FALSE}
+round(cor(as.numeric(df$ideology), colMeans(df_fit$alpha_adj)), 2)
+```
+
+We can plot the distribution for a one single draw of $\alpha_j^{adj}$, but selecting only CCES respondents from California and Tennessee, which provides an approximation of the between-state and within-state variations. Not surprisingly, individuals from Tennessee tend to have higher ideal points.
+
+```{r, echo=FALSE, fig.align = "center", fig.height=3, fig.width=5, warning=FALSE, message=FALSE}
+ggplot(data = data.frame()) + 
+  geom_density(data = data.frame(x = df_fit$alpha_adj[1, df$state=="CA"]), aes(x = x), fill = "blue", alpha = 0.5) + 
+  geom_density(data = data.frame(x = df_fit$alpha_adj[1, df$state=="TN"]), aes(x = x), fill = "red", alpha = 0.5) +
+  scale_x_continuous(limits = c(-3, 3)) +
+  theme_bw() + xlab(latex2exp::TeX("$\\alpha^{adj}$")) + ylab("") + 
+  annotate("text", x = 2, y = 0.35, label = "Tennessee", color = "red") + 
+  annotate("text", x = -1.7, y = 0.35, label = "California", color = "blue")
+```
+
+Lastly, we can also visualize the probability of supporting each statement for the potential values of $\alpha_j^{adj}$.
+
+```{r, echo=FALSE, fig.align = "center", fig.height=7, fig.width=12}
+questions <- c("Always allow a woman to obtain an abortion as a matter of choice (Reversed)",
+               "Permit abortion ONLY in case of rape, incest or when the woman’s life is in danger",
+               "Ban abortions after the 20th week of pregnancy",
+               "Allow employers to decline coverage of abortions in insurance plans",
+               "Prohibit the expenditure of funds authorized or appropriated by federal law for any abortion",
+               "Make abortions illegal in all circumstances")
+plotlogistic <- function(question, n_draws){
+    draws <- sample(1:nrow(df_fit$beta_adj), n_draws)
+    outcome <- matrix(seq(-5, 5, by = .1))
+    for(draw in draws){
+      outcome <- cbind(outcome, df_fit$gamma_adj[draw, question] * (seq(-5, 5, by = .1) - df_fit$beta_adj[draw, question]))
+    }
+    outcome <- melt(data.frame(outcome), id.vars = "X1")
+    outcome$value <- plogis(outcome$value)
+    plot <- ggplot(data = outcome, aes(x = X1, y = value, color = variable)) + geom_line() + scale_colour_grey() + guides(color="none") +
+      xlab(latex2exp::TeX("$\\alpha^{adj}$")) + ylab(latex2exp::TeX("$P(y = 1)$")) + ggtitle(questions[question]) + theme_bw() + theme(plot.title = element_text(size=10))
+    return(plot)
+}
+
+grid.arrange(plotlogistic(1, 50), plotlogistic(2, 50), plotlogistic(3, 50), plotlogistic(4, 50), plotlogistic(5, 50), plotlogistic(6, 50), ncol = 2)
+```
+
+## The Abortion Opposition Index for US States
+
+Assuming our poststratification table has $T$ cells that reflect different geographic-demographic combinations, the ideal point model allows to estimate the expected ability $\mu_{\alpha_t}$ for each of these combinations. Before poststratification, we need to transform this $\mu_{\alpha_t}$ into $\mu_{\alpha^{adj}_t}$ by considering that $\mu_{\alpha^{adj}_t} = \frac{\mu_{\alpha_t} - \bar{\alpha}}{s_{\alpha}}$. In order to do this we:
+
+1. Draw with replacement $L$ individuals from the poststratification table (weighting by $N$, the number of people in each cell).
+2. Calculate $\mu_{\alpha_l}$ for each subject $l$, and then add some random noise centered at zero and with standard deviation $\sigma_\alpha$ (which was estimated in the model). This simulates the $\alpha_l$ for a random sample of $L$ subjects that come from the population defined by the poststratification table.
+3. Given $\alpha_l$, calculate $\bar{\alpha}_l$ and $s_{\alpha_l}$. These values correspond to the estimated average and standard deviation for the abilities in the population defined by the poststratification table.
+4. Calculate $\mu_{\alpha^{adj}_t} = \frac{\mu_{\alpha_t} - \bar{\alpha}_l}{s_{\alpha_l}}$
+
+This process is repeated for each draw of the posterior distribution. If we have $D$ draws and $T$ poststratification cells, $\mu_{\alpha^{adj}_t}$ will be a $D \times T$ matrix.
+
+```{r}
+# Calculating mu_alpha_adj
+ndraws <- nrow(df_fit$alpha_pred_raw)
+L <- 10000
+
+mu_alpha_adj <- matrix(NA, nrow = ndraws, ncol = 12000)
+for(d in 1:ndraws){
+    mu_alpha <- df_fit$mu_alpha[d] + df_fit$alpha_pred_raw[d,]
+    sample_alphas_pop <- sample(mu_alpha, size = L, prob = postrat_df$n/sum(postrat_df$n), replace = TRUE) 
+    sample_alphas_pop <- sample_alphas_pop + rnorm(L, 0, df_fit$sigma_alpha[d])
+    mean_alpha <- mean(sample_alphas_pop)
+    sd_alpha <- sd(sample_alphas_pop)
+    
+    mu_alpha_adj[d,] <- (mu_alpha - mean_alpha) / sd_alpha
+}
+```
+
+$\mu_{\alpha^{adj}_t}$ can be poststratified as usual in order to obtain state-level ideal points that reflect what we may refer as the _Abortion Opposition Index_. It is important to clarify that these final sub-national estimates are relative to the national level (which is, as defined in the model, equal to zero).
+
+```{r}
+# Poststratification
+national_level <- mu_alpha_adj %*% postrat_df$n / sum(postrat_df$n)
+
+df_state_idealpoint <- data.frame(state = rep(NA, length(levels(df$state))),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+
+i = 1
+for(s in levels(df$state)){
+  state_estimates <- (mu_alpha_adj[, which(postrat_df$state==s)] %*% postrat_df$n[which(postrat_df$state==s)]/
+    sum(postrat_df$n[which(postrat_df$state==s)]) )
+  df_state_idealpoint$state[i] <- s
+  df_state_idealpoint$idealpoint_mean[i] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[i] <- sd(state_estimates)
+  i = i + 1
+}
+```
+
+```{r, fig.height= 3, fig.width=12, echo=FALSE, fig.align = "center"}
+df_state_idealpoint$state <- fct_reorder(df_state_idealpoint$state, statelevel_predictors$repvote)
+
+ggplot(data=df_state_idealpoint) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_point(aes(x=state, y=idealpoint_mean)) +
+  geom_errorbar(aes(ymin=idealpoint_mean - 2*idealpoint_sd,
+                    ymax=idealpoint_mean + 2*idealpoint_sd,
+                    x=state), alpha=.5, width = 0) +
+  theme_bw() +
+  labs(x="States",y="Abortion Opposition Index")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+```
+
+The correlation between these state-level estimates and Republican voteshare in the 2016 election is `r round(cor(df_state_idealpoint$idealpoint_mean, statelevel_predictors$repvote), 2)`.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, fig.height=5, fig.width=9, fig.align = "center"}
+states_map <- us_map(regions = "states")
+state_df_melted <- df_state_idealpoint %>% select(state, idealpoint_mean)
+states_map  <- left_join(states_map, state_df_melted, by = c("abbr" = "state")) %>% drop_na()
+
+ggplot(states_map, aes(x = x, y = y, group = group)) +
+  geom_polygon(colour = "lightgray") +
+  geom_polygon(aes(fill = idealpoint_mean)) + theme_void() + 
+  scale_fill_gradient2(midpoint = 0, limits = c(-0.6, 0.6), breaks = c(-0.5, -0.25, 0, 0.25, 0.5),
+                       name = "Abortion Opposition Index", low = muted("blue"), high = muted("red")) + 
+  theme(legend.margin=margin(l = 0.5, unit='cm'))
+```
+
+### Comparison with simple sum
+
+A simpler approach for obtaining estimates about the latent abortion opposition is to consider the sum of the six questions for each respondent as the outcome, fitting a multilevel linear regression and poststratifying as usual.
+
+```{r, echo = TRUE, warning=FALSE}
+df$abortion_score <- rowMeans(select(df, abortion1, abortion2, abortion3, abortion4, abortion5, abortion6), na.rm = TRUE)
+
+train = FALSE
+if(train){
+  fit_sum <- stan_glmer(abortion_score ~ (1 | state) + (1 | ethnicity) + (1 | age) + (1 | educ) + male + repvote + (1 | region),
+                        data = df,
+                        prior = normal(0, 1, autoscale = TRUE),
+                        prior_covariance = decov(scale = 0.50),
+                        adapt_delta = 0.99,
+                        seed = 1010)
+  saveRDS(fit_sum, file = "data_public/chapter3/models/fit_sum.rds")
+} else {
+  fit_sum <- readRDS(file = "data_public/chapter3/models/fit_sum.rds")
+}
+
+P <- posterior_epred(fit_sum, newdata = left_join(postrat_df, statelevel_predictors))
+df_state_sum <- data.frame(state = levels(postrat_df$state), 
+                           sum_mean = NA, 
+                           sum_sd = NA,
+                           sum_mean_relative = NA)
+
+national_level <- P %*% postrat_df$n / sum(postrat_df$n)
+
+for(i in 1:length(levels(postrat_df$state))) {
+  filtering_condition <- which(postrat_df$state == as.character(df_state_sum$state[i]))
+  P_filtered <- P[ ,filtering_condition]
+  k_filtered <- postrat_df[filtering_condition, ]$n
+  poststrat_prob_state <- P_filtered %*% k_filtered / sum(k_filtered)
+  df_state_sum$sum_mean[i] <- mean(poststrat_prob_state)
+  df_state_sum$sum_sd[i] <- sd(poststrat_prob_state)
+}
+```
+
+```{r, fig.height= 3, fig.width=12, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+df_state_sum$state <- fct_reorder(df_state_sum$state, statelevel_predictors$repvote)
+
+ggplot(data=df_state_sum) +
+  geom_point(aes(x=state, y=sum_mean)) +
+  geom_errorbar(aes(ymin=sum_mean - 2*sum_sd,
+                    ymax=sum_mean + 2*sum_sd,
+                    x=state), alpha=.5, width = 0) +
+  scale_y_continuous(expand=c(0,0)) + #limits = c(1, 4), 
+  theme_bw()+
+  labs(x="States",y="Abortion Opposition Score")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+joined_df <- left_join(df_state_idealpoint, df_state_sum)
+```
+
+These results are very similar to what we obtained with the ideal-point model. In fact, the state-level point estimates produced by the two methods have a correlation of `r round(cor(joined_df$idealpoint_mean, joined_df$sum_mean), 4)`. Still, the ideal point model results in more precise results, with an average absolute $t$ of `r round(mean(abs(joined_df$idealpoint_mean/joined_df$idealpoint_sd)), 2)` that is higher than the `r round(mean(abs(joined_df$idealpoint_mean/joined_df$sum_sd)), 2)` produced by naive sum of question outcomes.
+
+### Fake-data simulation
+
+We expect the ideal point model to be similar to the naive sum approach when all the questions are equally relevant to the latent variable. Conversely, when some of the questions are more relevant than others we expect the ideal point model to perform better both in terms of reduced error and tighter standard errors. To demonstrate this we use fake data simulation. We draw 2,500 individuals according to the weights provided by the poststratification table, calculate their true ideal point based on pre-specified values for the multilevel predictors, and then define six questions. In one case we will use six questions which are approximately equally relevant ($\mu^{\gamma} = 2$, $\sigma^{\gamma} = 0.2$), while in the other we will use six questions with very different discrimination parameters ($\mu^{\gamma} = 2$, $\sigma^{\gamma} = 0.8$).
+
+#### Questions with similar discrimination parameters
+
+When we consider six questions with little variation across their discrimination parameters, the results for the ideal point MRP and the sum MRP are very similar both in terms of MAE and mean SE. The ideal point MRP estimates and the true values are in the same scale, but the naive sum MRP are not. In order to compare them we standarize the subnational estimates that result from the three methods.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+postrat_df_numeric <- data.frame(sapply(left_join(postrat_df, statelevel_predictors), as.numeric))
+set.seed(1010)
+df_fake <- postrat_df_numeric %>% 
+  select(state, repvote, region, age, educ, male, ethnicity) %>% 
+  sample_n(size = 2500, replace = TRUE, weight = (postrat_df$n)/sum(postrat_df$n))
+
+# Similuate dataframe with state-level characteristics and
+# obtain state-level effects
+statelevel <- postrat_df_numeric %>% select(state, repvote, region) %>% distinct()
+statelevel$effect <- 0.25*statelevel$repvote + c(-.02, -0.04, 0.06, 0.01)[statelevel$region] + rnorm(nrow(statelevel), 0, 0.05)
+
+# Simulate ideal points
+df_fake$idealpoint <- statelevel$effect[df_fake$state] + 
+  c(0.054, -0.13, 0.05, 0.02)[df_fake$ethnicity] +
+  c(-0.17, 0.10, -0.06, 0.06, 0.10, 0.17)[df_fake$age] + 
+  c(0.24, 0.16, 0.06, -0.13, -0.32)[df_fake$educ] +
+  0.17*df_fake$male + 
+  rnorm(nrow(df_fake), 0, 1)
+
+# Simulate ideal points for poststratification table
+postrat_df_numeric$idealpoint <- statelevel$effect[postrat_df_numeric$state] +
+  c(0.054, -0.13, 0.05, 0.02)[postrat_df_numeric$ethnicity] +
+  c(-0.17, 0.10, -0.06, 0.06, 0.10, 0.17)[postrat_df_numeric$age] +
+  c(0.24, 0.16, 0.06, -0.13, -0.32)[postrat_df_numeric$educ] +
+  0.17*postrat_df_numeric$male
+
+gammas <- c(2, 2.2, 1.9, 1.7, 2.1, 2)
+betas <- c(0, 1, -1, 0.5, -0.5, 0)
+
+df_fake$question1 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[1]*(df_fake$idealpoint - betas[1])))
+df_fake$question2 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[2]*(df_fake$idealpoint - betas[2])))
+df_fake$question3 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[3]*(df_fake$idealpoint - betas[3])))
+df_fake$question4 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[4]*(df_fake$idealpoint - betas[4])))
+df_fake$question5 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[5]*(df_fake$idealpoint - betas[5])))
+df_fake$question6 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[6]*(df_fake$idealpoint - betas[6])))
+
+national_level_true <- postrat_df_numeric$idealpoint %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+df_state_true <- data.frame(state = statelevel$state, true = NA)
+
+for(i in df_state_true$state){
+  filtering_condition <- which(postrat_df_numeric$state == df_state_true$state[i])
+  df_state_true$true[i] <- (postrat_df_numeric$idealpoint[filtering_condition] %*% postrat_df_numeric$n[filtering_condition] /
+    sum(postrat_df_numeric$n[filtering_condition])) - national_level_true
+}
+true_mean <- mean(df_state_true$true)
+true_sd <- sd(df_state_true$true)
+df_state_true$true <- (df_state_true$true - true_mean) / true_sd
+df_state_true$state <- fct_reorder(factor(df_state_true$state), statelevel_predictors$repvote)
+```
+
+
+```{r, fig.height=3.5, fig.width=12, fig.align='center', echo = FALSE, warning=FALSE, message=FALSE}
+df_fake$abortion_score <- rowSums(select(df_fake, starts_with("question")))
+if(FALSE){
+  fit_sum <- stan_glmer(abortion_score ~ (1 | state) + (1 | ethnicity) + (1 | age) + (1 | educ) + male + repvote + (1 | region),
+                        data = df_fake,
+                        prior = normal(0, 1, autoscale = TRUE),
+                        prior_covariance = decov(scale = 0.50),
+                        adapt_delta = 0.99,
+                        seed = 1010)
+  saveRDS(fit_sum, file = "data_public/chapter3/models/fakedata/fit_fakedata1_sum.rds")
+} else {
+  fit_sum <- readRDS("data_public/chapter3/models/fakedata/fit_fakedata1_sum.rds")
+}
+
+P <- posterior_epred(fit_sum,
+                    newdata = postrat_df_numeric)
+df_state_sum <- data.frame(state = unique(postrat_df_numeric$state), 
+                           sum_mean = NA, 
+                           sum_sd = NA,
+                           true = NA)
+
+national_level <- P %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+
+for(i in unique(postrat_df_numeric$state)){
+  filtering_condition <- which(postrat_df_numeric$state == df_state_sum$state[i])
+  P_filtered <- P[ ,filtering_condition]
+  k_filtered <- postrat_df[filtering_condition, ]$n
+  poststrat_prob_state <- P_filtered %*% k_filtered / sum(k_filtered) - national_level
+  
+  df_state_sum$sum_mean[i] <- mean(poststrat_prob_state)
+  df_state_sum$sum_sd[i] <- sd(poststrat_prob_state)
+}
+st_mean <- mean(df_state_sum$sum_mean)
+st_sd <- sd(df_state_sum$sum_mean)
+df_state_sum$sum_mean <- (df_state_sum$sum_mean - st_mean) / st_sd
+df_state_sum$sum_sd <- df_state_sum$sum_sd / st_sd
+df_state_sum$state <- fct_reorder(factor(df_state_sum$state), statelevel_predictors$repvote)
+
+df_fake$subject <- 1:nrow(df_fake)
+df_melted <- df_fake %>% select(starts_with("question"), state, ethnicity, age, educ, male, region, subject) %>% 
+  melt(id.vars = c("state", "age", "ethnicity", "educ", "male", "region", "subject"))
+data <- list(J = length(unique(df_melted$subject)), 
+             K = length(unique(df_melted$variable)), 
+             N = nrow(df_melted), 
+             S = nrow(statelevel_predictors),
+             P = nrow(postrat_df),
+             participant = as.numeric(df_melted$subject), 
+             question = as.numeric(df_melted$variable), 
+             state = as.numeric(df_melted$state),
+             age = as.numeric(df_melted$age),
+             ethnicity = as.numeric(df_melted$ethnicity),
+             educ = as.numeric(df_melted$educ),
+             male = as.numeric(df_melted$male),
+             region = as.numeric(statelevel_predictors$region),
+             repvote = statelevel_predictors$repvote,
+             postrat_state = as.numeric(postrat_df_numeric$state),
+             postrat_age = as.numeric(postrat_df_numeric$age),
+             postrat_ethnicity = as.numeric(postrat_df_numeric$ethnicity),
+             postrat_educ = as.numeric(postrat_df_numeric$educ),
+             postrat_male = postrat_df_numeric$male,
+             y = df_melted$value)
+if(FALSE){
+  fit_id <- stan_model("data_public/chapter3/idealpoint.stan")
+  fit_relevant <- sampling(fit_id, data = data, iter = 1000, warmup = 400, chains = 5,
+                  control = list(adapt_delta = 0.99, max_treedepth = 12),
+                  refresh = 25)
+  saveRDS(fit_relevant, file = "data_public/chapter3/models/fakedata/fit_fakedata1_idealpoint.rds")
+} else{
+  fit_relevant <- readRDS("data_public/chapter3/models/fakedata/fit_fakedata1_idealpoint.rds")
+}
+
+df_fit <- rstan::extract(fit_relevant)
+
+ndraws <- nrow(df_fit$alpha_pred_raw)
+L <- 5000
+
+mu_alpha_adj <- matrix(NA, nrow = ndraws, ncol = 12000)
+for(d in 1:ndraws){
+    mu_alpha <- df_fit$mu_alpha[d] + df_fit$alpha_pred_raw[d,]
+    sample_alphas_pop <- sample(mu_alpha, size = L, prob = postrat_df$n/sum(postrat_df$n), replace = TRUE) 
+    sample_alphas_pop <- sample_alphas_pop + rnorm(L, 0, df_fit$sigma_alpha[d])
+    mean_alpha <- mean(sample_alphas_pop)
+    sd_alpha <- sd(sample_alphas_pop)
+    
+    mu_alpha_adj[d,] <- (mu_alpha - mean_alpha) / sd_alpha
+}
+
+national_level <- mu_alpha_adj %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+
+df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+for(s in 1:max(postrat_df_numeric$state)){
+  state_estimates <- (mu_alpha_adj[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]) /
+    sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+  df_state_idealpoint$state[s] <- s
+  df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+}
+
+ip_mean <- mean(df_state_idealpoint$idealpoint_mean)
+ip_sd <- sd(df_state_idealpoint$idealpoint_mean)
+df_state_idealpoint$idealpoint_mean <- (df_state_idealpoint$idealpoint_mean - ip_mean) / ip_sd
+df_state_idealpoint$idealpoint_sd <- (df_state_idealpoint$idealpoint_sd)/ ip_sd
+df_state_idealpoint$state <- fct_reorder(factor(df_state_idealpoint$state), statelevel_predictors$repvote)
+
+ggplot(data=df_state_idealpoint) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_point(aes(x=state, y=idealpoint_mean), color = "#7B1CE3", alpha = 1) +
+  geom_errorbar(aes(ymin=idealpoint_mean - 2*idealpoint_sd,
+                    ymax=idealpoint_mean + 2*idealpoint_sd,
+                    x=state), alpha=.5, width = 0, color = "#7B1CE3", alpha = 1) +
+  geom_point(data = df_state_sum, aes(x=state, y=sum_mean), color = "#E37B1C", alpha = 0.7) +
+  geom_errorbar(data = df_state_sum, aes(ymin=sum_mean - 2*sum_sd,
+                    ymax=sum_mean + 2*sum_sd,
+                    x=state), alpha=.5, width = 0, color = "#E37B1C", alpha = 0.7) +
+  geom_point(data = df_state_true, aes(x=state, y=true), color = "#1CE37B", alpha = 1) +
+  scale_y_continuous(expand=c(0,0)) +
+  theme_bw() +
+  labs(x="States",y="Standardized Index")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10)) +
+  annotate("text", x = 7, y = 3, color = "#7B1CE3", label = paste0("MAE for ideal point model: ", round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_true$true)), 2))) +
+  annotate("text", x = 7, y = 2.5, color = "#7B1CE3", label = paste0("Mean SE for ideal point model: ", round(mean(df_state_idealpoint$idealpoint_sd), 2))) +
+  annotate("text", x = 7, y = 2, color = "#E37B1C", label = paste0("MAE for sum model: ", round(mean(abs(df_state_sum$sum_mean - df_state_true$true)), 2))) +
+  annotate("text", x = 7, y = 1.5, color = "#E37B1C", label = paste0("Mean SE for sum model: ", round(mean(df_state_sum$sum_sd), 2)))
+```
+
+#### Questions with different discrimination values
+
+When the questions have very different $\gamma_k$, the advantage of ideal point MRP is more remarkable, both in terms of lower mean SE and smaller Mean Absolute Error.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+postrat_df_numeric <- data.frame(sapply(left_join(postrat_df, statelevel_predictors), as.numeric))
+set.seed(1010)
+df_fake <- postrat_df_numeric %>% 
+  select(state, repvote, region, age, educ, male, ethnicity) %>% 
+  sample_n(size = 2500, replace = TRUE, weight = (postrat_df$n)/sum(postrat_df$n))
+
+# Similuate dataframe with state-level characteristics and
+# obtain state-level effects
+statelevel <- postrat_df_numeric %>% select(state, repvote, region) %>% distinct()
+statelevel$effect <- 0.25*statelevel$repvote + c(-.02, -0.04, 0.06, 0.01)[statelevel$region] + rnorm(nrow(statelevel), 0, 0.05)
+
+# Simulate ideal points
+df_fake$idealpoint <- statelevel$effect[df_fake$state] + 
+  c(0.054, -0.13, 0.05, 0.02)[df_fake$ethnicity] +
+  c(-0.17, 0.10, -0.06, 0.06, 0.10, 0.17)[df_fake$age] + 
+  c(0.24, 0.16, 0.06, -0.13, -0.32)[df_fake$educ] +
+  0.17*df_fake$male + 
+  rnorm(nrow(df_fake), 0, 1)
+
+# Simulate ideal points for poststratification table
+postrat_df_numeric$idealpoint <- statelevel$effect[postrat_df_numeric$state] +
+  c(0.054, -0.13, 0.05, 0.02)[postrat_df_numeric$ethnicity] +
+  c(-0.17, 0.10, -0.06, 0.06, 0.10, 0.17)[postrat_df_numeric$age] +
+  c(0.24, 0.16, 0.06, -0.13, -0.32)[postrat_df_numeric$educ] +
+  0.17*postrat_df_numeric$male
+
+gammas <- c(2.3, 3, 1.3, 0.3, 2.8, 1.7)
+betas <- c(0, 1, -1, 0.5, -0.5, 0)
+
+df_fake$question1 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[1]*(df_fake$idealpoint - betas[1])))
+df_fake$question2 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[2]*(df_fake$idealpoint - betas[2])))
+df_fake$question3 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[3]*(df_fake$idealpoint - betas[3])))
+df_fake$question4 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[4]*(df_fake$idealpoint - betas[4])))
+df_fake$question5 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[5]*(df_fake$idealpoint - betas[5])))
+df_fake$question6 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[6]*(df_fake$idealpoint - betas[6])))
+
+national_level_true <- postrat_df_numeric$idealpoint %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+df_state_true <- data.frame(state = statelevel$state, true = NA)
+
+for(i in df_state_true$state){
+  filtering_condition <- which(postrat_df_numeric$state == df_state_true$state[i])
+  df_state_true$true[i] <- (postrat_df_numeric$idealpoint[filtering_condition] %*% postrat_df_numeric$n[filtering_condition] /
+    sum(postrat_df_numeric$n[filtering_condition])) - national_level_true
+}
+true_mean <- mean(df_state_true$true)
+true_sd <- sd(df_state_true$true)
+df_state_true$true <- (df_state_true$true - true_mean) / true_sd
+df_state_true$state <- fct_reorder(factor(df_state_true$state), statelevel_predictors$repvote)
+```
+
+```{r, fig.height=3.5, fig.width=12, fig.align='center', echo = FALSE, warning=FALSE, message=FALSE}
+df_fake$abortion_score <- rowSums(select(df_fake, starts_with("question")))
+if(FALSE){
+  fit_sum <- stan_glmer(abortion_score ~ (1 | state) + (1 | ethnicity) + (1 | age) + (1 | educ) + male + repvote + (1 | region),
+                        data = df_fake,
+                        prior = normal(0, 1, autoscale = TRUE),
+                        prior_covariance = decov(scale = 0.50),
+                        adapt_delta = 0.99,
+                        seed = 1010)
+  saveRDS(fit_sum, file = "data_public/chapter3/models/fakedata/fit_fakedata2_sum.rds")
+} else {
+  fit_sum <- readRDS("data_public/chapter3/models/fakedata/fit_fakedata2_sum.rds")
+}
+
+P <- posterior_epred(fit_sum,
+                    newdata = postrat_df_numeric)
+df_state_sum <- data.frame(state = unique(postrat_df_numeric$state), 
+                           sum_mean = NA, 
+                           sum_sd = NA,
+                           true = NA)
+
+national_level <- P %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+
+for(i in unique(postrat_df_numeric$state)){
+  filtering_condition <- which(postrat_df_numeric$state == df_state_sum$state[i])
+  P_filtered <- P[ ,filtering_condition]
+  k_filtered <- postrat_df[filtering_condition, ]$n
+  poststrat_prob_state <- P_filtered %*% k_filtered / sum(k_filtered) - national_level
+  
+  df_state_sum$sum_mean[i] <- mean(poststrat_prob_state)
+  df_state_sum$sum_sd[i] <- sd(poststrat_prob_state)
+}
+st_mean <- mean(df_state_sum$sum_mean)
+st_sd <- sd(df_state_sum$sum_mean)
+df_state_sum$sum_mean <- (df_state_sum$sum_mean - st_mean) / st_sd
+df_state_sum$sum_sd <- df_state_sum$sum_sd / st_sd
+df_state_sum$state <- fct_reorder(factor(df_state_sum$state), statelevel_predictors$repvote)
+
+df_fake$subject <- 1:nrow(df_fake)
+df_melted <- df_fake %>% select(starts_with("question"), state, ethnicity, age, educ, male, region, subject) %>% 
+  melt(id.vars = c("state", "age", "ethnicity", "educ", "male", "region", "subject"))
+data <- list(J = length(unique(df_melted$subject)), 
+             K = length(unique(df_melted$variable)), 
+             N = nrow(df_melted), 
+             S = nrow(statelevel_predictors),
+             P = nrow(postrat_df),
+             participant = as.numeric(df_melted$subject), 
+             question = as.numeric(df_melted$variable), 
+             state = as.numeric(df_melted$state),
+             age = as.numeric(df_melted$age),
+             ethnicity = as.numeric(df_melted$ethnicity),
+             educ = as.numeric(df_melted$educ),
+             male = as.numeric(df_melted$male),
+             region = as.numeric(statelevel_predictors$region),
+             repvote = statelevel_predictors$repvote,
+             postrat_state = as.numeric(postrat_df_numeric$state),
+             postrat_age = as.numeric(postrat_df_numeric$age),
+             postrat_ethnicity = as.numeric(postrat_df_numeric$ethnicity),
+             postrat_educ = as.numeric(postrat_df_numeric$educ),
+             postrat_male = postrat_df_numeric$male,
+             y = df_melted$value)
+if(FALSE){
+  fit_id <- stan_model("data_public/chapter3/idealpoint.stan")
+  fit_relevant <- sampling(fit_id, data = data, iter = 1000, warmup = 400, chains = 5,
+                  control = list(adapt_delta = 0.99, max_treedepth = 12),
+                  refresh = 25)
+  saveRDS(fit_relevant, file = "data_public/chapter3/models/fakedata/fit_fakedata2_idealpoint.rds")
+} else{
+  fit_relevant <- readRDS("data_public/chapter3/models/fakedata/fit_fakedata2_idealpoint.rds")
+}
+
+df_fit <- rstan::extract(fit_relevant)
+
+ndraws <- nrow(df_fit$alpha_pred_raw)
+L <- 5000
+
+mu_alpha_adj <- matrix(NA, nrow = ndraws, ncol = 12000)
+for(d in 1:ndraws){
+    mu_alpha <- df_fit$mu_alpha[d] + df_fit$alpha_pred_raw[d,]
+    sample_alphas_pop <- sample(mu_alpha, size = L, prob = postrat_df$n/sum(postrat_df$n), replace = TRUE) 
+    sample_alphas_pop <- sample_alphas_pop + rnorm(L, 0, df_fit$sigma_alpha[d])
+    mean_alpha <- mean(sample_alphas_pop)
+    sd_alpha <- sd(sample_alphas_pop)
+    
+    mu_alpha_adj[d,] <- (mu_alpha - mean_alpha) / sd_alpha
+}
+
+national_level <- mu_alpha_adj %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+
+df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+for(s in 1:max(postrat_df_numeric$state)){
+  state_estimates <- (mu_alpha_adj[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]) /
+    sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+  df_state_idealpoint$state[s] <- s
+  df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+}
+
+ip_mean <- mean(df_state_idealpoint$idealpoint_mean)
+ip_sd <- sd(df_state_idealpoint$idealpoint_mean)
+df_state_idealpoint$idealpoint_mean <- (df_state_idealpoint$idealpoint_mean - ip_mean) / ip_sd
+df_state_idealpoint$idealpoint_sd <- (df_state_idealpoint$idealpoint_sd)/ ip_sd
+df_state_idealpoint$state <- fct_reorder(factor(df_state_idealpoint$state), statelevel_predictors$repvote)
+
+ggplot(data=df_state_idealpoint) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_point(aes(x=state, y=idealpoint_mean), color = "#7B1CE3", alpha = 1) +
+  geom_errorbar(aes(ymin=idealpoint_mean - 2*idealpoint_sd,
+                    ymax=idealpoint_mean + 2*idealpoint_sd,
+                    x=state), alpha=.5, width = 0, color = "#7B1CE3", alpha = 1) +
+  geom_point(data = df_state_sum, aes(x=state, y=sum_mean), color = "#E37B1C", alpha = 0.7) +
+  geom_errorbar(data = df_state_sum, aes(ymin=sum_mean - 2*sum_sd,
+                    ymax=sum_mean + 2*sum_sd,
+                    x=state), alpha=.5, width = 0, color = "#E37B1C", alpha = 0.7) +
+  geom_point(data = df_state_true, aes(x=state, y=true), color = "#1CE37B", alpha = 1) +
+  scale_y_continuous(expand=c(0,0)) +
+  theme_bw() +
+  labs(x="States",y="Standardized Index")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10)) +
+  annotate("text", x = 7, y = 3, color = "#7B1CE3", label = paste0("MAE for ideal point model: ", round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_true$true)), 2))) +
+  annotate("text", x = 7, y = 2.5, color = "#7B1CE3", label = paste0("Mean SE for ideal point model: ", round(mean(df_state_idealpoint$idealpoint_sd), 2))) +
+  annotate("text", x = 7, y = 2, color = "#E37B1C", label = paste0("MAE for sum model: ", round(mean(abs(df_state_sum$sum_mean - df_state_true$true)), 2))) +
+  annotate("text", x = 7, y = 1.5, color = "#E37B1C", label = paste0("Mean SE for sum model: ", round(mean(df_state_sum$sum_sd), 2)))
+```
+
+Lastly, we can see that the ideal point MRP has been able to recover the true $\gamma_k$ and $\beta_k$ for each question.
+
+```{r, echo = FALSE}
+data.frame(true_gamma = gammas,
+           estimated_gamma = round(colMeans(df_fit$gamma_adj), 1),
+           true_beta = betas,
+           estimated_beta = round(colMeans(df_fit$beta_adj), 1)) %>% kable(format = 'markdown')
+```
+
+## Estimating Support for Individual Questions
+
+Based on the estimated $\mu^{\alpha}$, $A_{\rm s[j]}^{\rm state}$, $A_{\rm a[j]}^{\rm age}$, $A_{\rm r[j]}^{\rm ethnicity}$, $A_{\rm e[j]}^{\rm education}$, and $B^{\rm male}$ we can estimate $\mu_{\alpha_j}$, the average ability for each cell $j$ in the poststratification table. This was the quantity that previously we standardized into $\mu_{\alpha^{adj}_j}$ and used in the poststratification step, obtaining state-level estimates for the ideal points. These average ability estimates can instead be transformed with $logit^{-1}(\gamma_{k}^{adj}(\mu_{\alpha_j}^{adj} - \beta_{k}^{adj}))$. The result is an estimate of the probability of supporting question $k$ for the average ability corresponding to each poststratification cell.
+
+### Mind the (Jensen's) gap
+
+$\mu_{\alpha^{adj}_j}$ reflects the (standardized) average ideal point position for each poststratification cell, which can be transformed into the probability of the average person in this cell $j$ supporting a given statement $k$. However, this quantity is not particularly interesting for us. What we really need to estimate is the average probability that the individuals in cell $j$ support statement $k$. In a simplified example, what we have estimated is the probability that the average Texan supports a given statement. However, our goal is to obtain the average support of that statement for the people in Texas. For this, we need to consider that, for each poststratification cell $j$, $\alpha_j \sim N(\mu_{\alpha_j} \sigma_\alpha)$.
+
+Naively using $\mu_{\alpha_j}$ or its standardized version, as we have done in the previous subsection, results in estimates that are too extreme. As a result of Jensen's inequality and the properties of the logistic function, if we use a nonlinear transformation $f(x) = logit^{-1}(g(x - b))$ (where $g>0$) on a random variable $X$ we will obtain that $f(E[X]) \leq E[f(X)]$ when $f(x)$ is convex (i.e. when $X - b < 0$) and $f(E[x]) \geq E[f(x)]$ when it is concave (i.e. when $X - b > 0$). We can show this by simulating multiple draws from $X \sim N(0, \sigma)$ and transforming them with $f(x) = logit^{-1}(x)$ (i.e. in our example, $b = 0$ and $g = 1$):
+
+```{r, fig.height= 4, fig.width=7, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+x <- seq(-4, 4, length.out = 2000)
+f_of_e <- plogis(seq(-4, 4, length.out = 2000))
+e_of_f1 <- rowMeans(plogis(replicate(5000, seq(-4, 4, length.out = 2000)) + matrix(rnorm(2000*5000, 0, 1), nrow = 2000, ncol = 5000)))
+e_of_f2 <- rowMeans(plogis(replicate(5000, seq(-4, 4, length.out = 2000)) + matrix(rnorm(2000*5000, 0, 2), nrow = 2000, ncol = 5000)))
+
+
+jensen <- data.frame(x = x, f_of_e = f_of_e, e_of_f1 = e_of_f1, e_of_f2 = e_of_f2)
+jensen <- melt(jensen, id.vars = "x")
+
+ggplot(jensen, aes(x = x, y = value, color = variable)) + geom_line() + theme_bw() + ylab("") + 
+  xlab("X") +
+  scale_color_discrete(name = "X := N(0,sigma)",
+                       labels = c("f(E[X])",
+                                  "E[f(X)] when sigma = 1", 
+                                  "E[f(X)] when sigma = 2"))
+```
+
+In essence, using $\mu_{\alpha_j}$ or its standardized version will result in more extreme estimates due to the nonlinearity in the transformation. However, obtaining reliable estimates of the probability of support of question $k$ for each poststratification cell $j$ is still possible:
+
+1. Draw with replacement $L$ individuals from the poststratification table (weighting by $N$, the number of people in each cell).
+2. Calculate $\mu_{\alpha_l}$ for each subject $l$, and then add some random noise centered at zero and with standard deviation $\sigma_\alpha$ (which was estimated in the model). This simulates the $\alpha_l$ for a random sample of $L$ subjects that come from the population defined by the poststratification table.
+3. Given $\alpha_l$, calculate $\bar{\alpha}_l$ and $s_{\alpha_l}$. These values correspond to the estimated average and standard deviation for the abilities in the population defined by the poststratification table.
+5. For each poststratification cell $t$:
+    i. Simulate $s$ draws from the distribution of alphas $\alpha_s \sim \text{normal}(\mu_{\alpha_t}, \sigma_\alpha)$. These $s$ draws correspond to individuals with the demographic-geographic factors defined in cell $t$.
+    ii. Standardize $\alpha_s^{adj} = \frac{\alpha_s - \bar{\alpha}_l}{s_{\alpha_l}}$
+    iii. Considering $\alpha_s^{adj}$ is a vector with $s$ elements, obtain $P(y_{k,t} = 1) = \text{Mean}(logit^{-1}(\gamma_k^{adj}\times(\alpha_s^{adj} - \beta_k^{adj})))$
+
+$P(y_{k,t} = 1)$ represents the average support for question $k$ among individuals in cell $t$. To propagate the uncertainty about the parameters in the model, these steps must be repeated once for every posterior draw $d$, obtaining a $D \times T$ matrix that can be poststratified as usual. 
+
+### Results from Standard and Ideal Point MRP
+
+We compare the individual-question estimates for the ideal point model and the standard model. As expected, the results from both methods are similar, although there are also some differences.
+
+#### Question 6
+
+> Make abortions illegal in all circumstances
+
+The following code implements the algorithm described above that results in the $D \times T$ matrix $P(y_{k,t} = 1)$. Instead of considering the $D$ posterior draws, we only use 25 for computational efficiency. This $P(y_{k,t} = 1)$ matrix is then poststratified and, ultimately, we obtain the national and state-level estimates.
+
+```{r, fig.height= 3.5, fig.width=12, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+# Standard MRP Results
+if(FALSE){
+  fit_standard6 <- stan_glmer(abortion6 ~ (1 | state) + (1 | age) + (1 | ethnicity) + (1 | educ) + male +
+                     repvote + (1 | region),
+   family = binomial(link = "logit"),
+   data = left_join(df, statelevel_predictors),
+   prior = normal(0, 1, autoscale = TRUE),
+   prior_covariance = decov(scale = 0.50),
+   adapt_delta = 0.99,
+   seed = 1010)
+  saveRDS(fit_standard6, file = "data_public/chapter3/models/individual/fit_standard6.rds")
+} else {
+  fit_standard6 <- readRDS("data_public/chapter3/models/individual/fit_standard6.rds")
+}
+
+P <- posterior_epred(fit_standard6, newdata = left_join(postrat_df, statelevel_predictors))
+national_level_standard <- P %*% postrat_df$n / sum(postrat_df$n)
+
+df_state_standard <- data.frame(state = rep(NA, length(levels(df$state))),
+                       state_mean = rep(NA, length(levels(df$state))),
+                       state_sd = rep(NA, length(levels(df$state))))
+i = 1
+for(s in levels(df$state)){
+  state_estimates <- (P[, which(postrat_df$state==s)] %*% postrat_df$n[which(postrat_df$state==s)]/
+    sum(postrat_df$n[which(postrat_df$state==s)]))
+  df_state_standard$state[i] <- s
+  df_state_standard$state_mean[i] <- mean(state_estimates)
+  df_state_standard$state_sd[i] <- sd(state_estimates)
+  i = i + 1
+}
+
+# Ideal Point MRP Results
+fit <- readRDS("data_public/chapter3/models/fit_idealpoint.rds")
+```
+
+```{r, warning=FALSE, message=FALSE}
+question_number <- 6
+df_fit <- rstan::extract(fit)
+ndraws <- 25 # sample of draws to reduce computation time
+nsims <- 50
+L <- 1000
+sample_draws <- sample(nrow(df_fit$alpha_pred_raw), size = ndraws)
+question_pred <- matrix(NA, ncol = 12000, nrow = ndraws)
+for(d in 1:ndraws){
+    mu_alpha <- df_fit$mu_alpha[sample_draws[d]] + df_fit$alpha_pred_raw[sample_draws[d],]
+    sample_alphas_pop <- sample(mu_alpha, size = L, prob = postrat_df$n/sum(postrat_df$n), replace = TRUE) 
+    sample_alphas_pop <- sample_alphas_pop + rnorm(L, 0, df_fit$sigma_alpha[sample_draws[d]])
+    mean_alpha <- mean(sample_alphas_pop)
+    sd_alpha <- sd(sample_alphas_pop)
+    
+    for(t in 1:12000){
+      alpha_pred <- mu_alpha[t] + rnorm(nsims, 0, df_fit$sigma_alpha[sample_draws[d]])
+      alpha_pred <- (alpha_pred - mean_alpha)/sd_alpha
+      question_pred[d,t] <- mean(plogis(df_fit$gamma_adj[sample_draws[d], question_number]*(alpha_pred - df_fit$beta_adj[sample_draws[d], question_number])))
+    }
+}
+
+national_level_idealpoint <- question_pred %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+for(s in 1:max(postrat_df_numeric$state)){
+  state_estimates <- question_pred[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]/
+    sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+  df_state_idealpoint$state[s] <- s
+  df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+}
+df_state_idealpoint$state <- statelevel_predictors$state
+```
+
+The results are plotted along the full-CCES disaggregated estimates and the estimates obtained with standard MRP.
+
+```{r, fig.height= 3.5, fig.width=12, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+national_level_all <- mean(df_all$abortion6, na.rm = TRUE)
+df_state_all <- df_all %>% group_by(state) %>% summarise(state_mean = mean(abortion6), n = n())
+
+# Plot
+df_state_standard$state <- fct_reorder(df_state_standard$state, statelevel_predictors$repvote)
+
+compare1 <- ggplot(data=df_state_standard) +
+  geom_point(aes(x=state, y=state_mean), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=state_mean - 2*state_sd,
+                    ymax=state_mean + 2*state_sd,
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=df_state_idealpoint, aes(x=state, y=idealpoint_mean), color = "#7B1CE3") +
+  geom_errorbar(data=df_state_idealpoint, 
+                aes(ymin=idealpoint_mean - 2*idealpoint_sd, 
+                    ymax=idealpoint_mean + 2*idealpoint_sd, 
+                    x=state), 
+                alpha=.5, width = 0, color = "#7B1CE3") +
+  geom_point(data = df_state_all, aes(x=state, y=state_mean), color = "#1CE37B") +
+  geom_errorbar(data = df_state_all, 
+                aes(ymin=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    ymax=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    x=state), alpha=.5, width = 0, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = data.frame())+
+  geom_point(aes(y=mean(national_level_standard), x = .25), color = "#E37B1C") +
+  geom_errorbar(aes(y = mean(national_level_standard), 
+                x = .25,
+                ymin = mean(national_level_standard) - 2*sd(national_level_standard),
+                ymax = mean(national_level_standard) + 2*sd(national_level_standard)),
+                width = 0, color = "#E37B1C") +
+  geom_text(aes(x = Inf, y = mean(national_level_standard) - 0.075, label = "Standard MRP"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = mean(national_level_idealpoint), x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = mean(national_level_idealpoint), 
+                x = .75, 
+                ymin = mean(national_level_idealpoint) - 2*sd(national_level_idealpoint),
+                ymax = mean(national_level_idealpoint) + 2*sd(national_level_idealpoint)),
+                width = 0, color = "#7B1CE3") +
+  geom_text(aes(x = Inf, y = mean(national_level_idealpoint) + 0.075, label = "IdealPoint MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  geom_point(aes(y=national_level_all, x = .5), color = "#1CE37B") +
+  geom_errorbar(aes(y = national_level_all, 
+                x = .5, 
+                ymin = national_level_all - 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all)),
+                ymax = national_level_all + 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all))),
+                width = 0, color = "#1CE37B") +
+  geom_text(data = data.frame(), aes(x = Inf, y = national_level_all, label = "Complete Survey"), 
+            hjust = -.06, size = 4, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot::bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+The mean SE for the state-level ideal point MRP estimates is `r round(mean(df_state_idealpoint$idealpoint_sd), 4)*100`%, while the standard MRP produces an average SE of `r round(mean(df_state_standard$state_sd), 4)*100`%. Measuring the error of the point estimates is trickier, as there is no clear ground-truth in this case. The closest we can consider are the estimates from the full-sample CCES. If we compare the state-level ideal point MRP estimates to the results from full-sample CCES, we obtain a MAE of `r round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%, while if the comparison is made with the standard MRP we obtain a MAE of `r round(mean(abs(df_state_standard$state_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%.
+
+#### Question 5
+
+> Prohibit the expenditure of funds authorized or appropriated by federal law for any abortion
+
+```{r, fig.height= 3.5, fig.width=12, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+# Standard MRP Results
+if(FALSE){
+  fit_standard5 <- stan_glmer(abortion5 ~ (1 | state) + (1 | age) + (1 | ethnicity) + (1 | educ) + male +
+                     repvote + (1 | region),
+   family = binomial(link = "logit"),
+   data = left_join(df, statelevel_predictors),
+   prior = normal(0, 1, autoscale = TRUE),
+   prior_covariance = decov(scale = 0.50),
+   adapt_delta = 0.99,
+   seed = 1010)
+  saveRDS(fit_standard5, file = "data_public/chapter3/models/individual/fit_standard5.rds")
+} else {
+  fit_standard5 <- readRDS("data_public/chapter3/models/individual/fit_standard5.rds")
+}
+
+P <- posterior_epred(fit_standard5, newdata = left_join(postrat_df, statelevel_predictors))
+national_level_standard <- P %*% postrat_df$n / sum(postrat_df$n)
+
+df_state_standard <- data.frame(state = rep(NA, length(levels(df$state))),
+                       state_mean = rep(NA, length(levels(df$state))),
+                       state_sd = rep(NA, length(levels(df$state))))
+i = 1
+for(s in levels(df$state)){
+  state_estimates <- (P[, which(postrat_df$state==s)] %*% postrat_df$n[which(postrat_df$state==s)]/
+    sum(postrat_df$n[which(postrat_df$state==s)]))
+  df_state_standard$state[i] <- s
+  df_state_standard$state_mean[i] <- mean(state_estimates)
+  df_state_standard$state_sd[i] <- sd(state_estimates)
+  i = i + 1
+}
+
+# Ideal Point MRP Results
+question_number <- 5
+
+ndraws <- 25
+nsims <- 50
+sample_draws <- sample(nrow(df_fit$alpha_pred_raw), size = ndraws)
+question_pred <- matrix(NA, nrow = 12000, ncol = ndraws)
+for(i in 1:ndraws){
+    mu_alpha_preds <- tibble(mu = df_fit$mu_alpha[sample_draws[i]] + df_fit$alpha_pred_raw[sample_draws[i],],
+                       n = postrat_df_numeric$n)
+    tosample <- sample(mu_alpha_preds$mu, size = 1000, prob = mu_alpha_preds$n/sum(mu_alpha_preds$n), replace = TRUE) 
+    tosample <- tosample + rnorm(1000, 0, df_fit$sigma_alpha[sample_draws[i]])
+    mean_alpha <- mean(tosample)
+    sd_alpha <- sd(tosample)
+    
+  for(j in 1:12000){
+    alpha_pred <- mu_alpha_preds$mu[j] + rnorm(nsims, 0, df_fit$sigma_alpha[sample_draws[i]])
+    alpha_pred <- (alpha_pred - mean_alpha)/sd_alpha
+    question_pred[j,i] <- mean(plogis(df_fit$gamma_adj[sample_draws[i], question_number]*(alpha_pred - df_fit$beta_adj[sample_draws[i], question_number])))
+  }
+}
+question_pred <- t(question_pred)
+national_level_idealpoint <- question_pred %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+for(s in 1:max(postrat_df_numeric$state)){
+  state_estimates <- question_pred[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]/
+    sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+  df_state_idealpoint$state[s] <- s
+  df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+}
+df_state_idealpoint$state <- statelevel_predictors$state
+
+national_level_all <- mean(df_all$abortion5, na.rm = TRUE)
+df_state_all <- df_all %>% group_by(state) %>% summarise(state_mean = mean(abortion5), n = n())
+
+# Plot
+df_state_standard$state <- fct_reorder(df_state_standard$state, statelevel_predictors$repvote)
+
+compare1 <- ggplot(data=df_state_standard) +
+  geom_point(aes(x=state, y=state_mean), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=state_mean - 2*state_sd,
+                    ymax=state_mean + 2*state_sd,
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=df_state_idealpoint, aes(x=state, y=idealpoint_mean), color = "#7B1CE3") +
+  geom_errorbar(data=df_state_idealpoint, 
+                aes(ymin=idealpoint_mean - 2*idealpoint_sd, 
+                    ymax=idealpoint_mean + 2*idealpoint_sd, 
+                    x=state), 
+                alpha=.5, width = 0, color = "#7B1CE3") +
+  geom_point(data = df_state_all, aes(x=state, y=state_mean), color = "#1CE37B") +
+  geom_errorbar(data = df_state_all, 
+                aes(ymin=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    ymax=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    x=state), alpha=.5, width = 0, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = data.frame())+
+  geom_point(aes(y=mean(national_level_standard), x = .25), color = "#E37B1C") +
+  geom_errorbar(aes(y = mean(national_level_standard), 
+                x = .25,
+                ymin = mean(national_level_standard) - 2*sd(national_level_standard),
+                ymax = mean(national_level_standard) + 2*sd(national_level_standard)),
+                width = 0, color = "#E37B1C") +
+  geom_text(aes(x = Inf, y = mean(national_level_standard) - 0.075, label = "Standard MRP"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = mean(national_level_idealpoint), x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = mean(national_level_idealpoint), 
+                x = .75, 
+                ymin = mean(national_level_idealpoint) - 2*sd(national_level_idealpoint),
+                ymax = mean(national_level_idealpoint) + 2*sd(national_level_idealpoint)),
+                width = 0, color = "#7B1CE3") +
+  geom_text(aes(x = Inf, y = mean(national_level_idealpoint) + 0.075, label = "IdealPoint MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  geom_point(aes(y=national_level_all, x = .5), color = "#1CE37B") +
+  geom_errorbar(aes(y = national_level_all, 
+                x = .5, 
+                ymin = national_level_all - 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all)),
+                ymax = national_level_all + 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all))),
+                width = 0, color = "#1CE37B") +
+  geom_text(data = data.frame(), aes(x = Inf, y = national_level_all, label = "Complete Survey"), 
+            hjust = -.06, size = 4, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot::bayesplot_grid(compare1, compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+* Ideal point MRP mean SE: `r round(mean(df_state_idealpoint$idealpoint_sd), 4)*100`%, 
+* Standard MRP mean SE: `r round(mean(df_state_standard$state_sd), 4)*100`%. 
+* Ideal point MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%
+* Standard MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_standard$state_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%.
+
+#### Question 4
+
+> Allow employers to decline coverage of abortions in insurance plans
+
+```{r, fig.height= 3.5, fig.width=12, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+# Standard MRP Results
+if(FALSE){
+  fit_standard4 <- stan_glmer(abortion4 ~ (1 | state) + (1 | age) + (1 | ethnicity) + (1 | educ) + male +
+                     repvote + (1 | region),
+   family = binomial(link = "logit"),
+   data = left_join(df, statelevel_predictors),
+   prior = normal(0, 1, autoscale = TRUE),
+   prior_covariance = decov(scale = 0.50),
+   adapt_delta = 0.99,
+   seed = 1010)
+  saveRDS(fit_standard4, file = "data_public/chapter3/models/individual/fit_standard4.rds")
+} else {
+  fit_standard4 <- readRDS("data_public/chapter3/models/individual/fit_standard4.rds")
+}
+
+P <- posterior_epred(fit_standard4, newdata = left_join(postrat_df, statelevel_predictors))
+national_level_standard <- P %*% postrat_df$n / sum(postrat_df$n)
+
+df_state_standard <- data.frame(state = rep(NA, length(levels(df$state))),
+                       state_mean = rep(NA, length(levels(df$state))),
+                       state_sd = rep(NA, length(levels(df$state))))
+i = 1
+for(s in levels(df$state)){
+  state_estimates <- (P[, which(postrat_df$state==s)] %*% postrat_df$n[which(postrat_df$state==s)]/
+    sum(postrat_df$n[which(postrat_df$state==s)]))
+  df_state_standard$state[i] <- s
+  df_state_standard$state_mean[i] <- mean(state_estimates)
+  df_state_standard$state_sd[i] <- sd(state_estimates)
+  i = i + 1
+}
+
+# Ideal Point MRP Results
+question_number <- 4
+
+ndraws <- 25
+nsims <- 50
+sample_draws <- sample(nrow(df_fit$alpha_pred_raw), size = ndraws)
+question_pred <- matrix(NA, nrow = 12000, ncol = ndraws)
+for(i in 1:ndraws){
+    mu_alpha_preds <- tibble(mu = df_fit$mu_alpha[sample_draws[i]] + df_fit$alpha_pred_raw[sample_draws[i],],
+                       n = postrat_df_numeric$n)
+    tosample <- sample(mu_alpha_preds$mu, size = 1000, prob = mu_alpha_preds$n/sum(mu_alpha_preds$n), replace = TRUE) 
+    tosample <- tosample + rnorm(1000, 0, df_fit$sigma_alpha[sample_draws[i]])
+    mean_alpha <- mean(tosample)
+    sd_alpha <- sd(tosample)
+    
+  for(j in 1:12000){
+    alpha_pred <- mu_alpha_preds$mu[j] + rnorm(nsims, 0, df_fit$sigma_alpha[sample_draws[i]])
+    alpha_pred <- (alpha_pred - mean_alpha)/sd_alpha
+    question_pred[j,i] <- mean(plogis(df_fit$gamma_adj[sample_draws[i], question_number]*(alpha_pred - df_fit$beta_adj[sample_draws[i], question_number])))
+  }
+}
+question_pred <- t(question_pred)
+national_level_idealpoint <- question_pred %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+for(s in 1:max(postrat_df_numeric$state)){
+  state_estimates <- question_pred[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]/
+    sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+  df_state_idealpoint$state[s] <- s
+  df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+}
+df_state_idealpoint$state <- statelevel_predictors$state
+
+national_level_all <- mean(df_all$abortion4, na.rm = TRUE)
+df_state_all <- df_all %>% group_by(state) %>% summarise(state_mean = mean(abortion4), n = n())
+
+# Plot
+df_state_standard$state <- fct_reorder(df_state_standard$state, statelevel_predictors$repvote)
+
+compare1 <- ggplot(data=df_state_standard) +
+  geom_point(aes(x=state, y=state_mean), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=state_mean - 2*state_sd,
+                    ymax=state_mean + 2*state_sd,
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=df_state_idealpoint, aes(x=state, y=idealpoint_mean), color = "#7B1CE3") +
+  geom_errorbar(data=df_state_idealpoint, 
+                aes(ymin=idealpoint_mean - 2*idealpoint_sd, 
+                    ymax=idealpoint_mean + 2*idealpoint_sd, 
+                    x=state), 
+                alpha=.5, width = 0, color = "#7B1CE3") +
+  geom_point(data = df_state_all, aes(x=state, y=state_mean), color = "#1CE37B") +
+  geom_errorbar(data = df_state_all, 
+                aes(ymin=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    ymax=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    x=state), alpha=.5, width = 0, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = data.frame())+
+  geom_point(aes(y=mean(national_level_standard), x = .25), color = "#E37B1C") +
+  geom_errorbar(aes(y = mean(national_level_standard), 
+                x = .25,
+                ymin = mean(national_level_standard) - 2*sd(national_level_standard),
+                ymax = mean(national_level_standard) + 2*sd(national_level_standard)),
+                width = 0, color = "#E37B1C") +
+  geom_text(aes(x = Inf, y = mean(national_level_standard) - 0.075, label = "Standard MRP"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = mean(national_level_idealpoint), x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = mean(national_level_idealpoint), 
+                x = .75, 
+                ymin = mean(national_level_idealpoint) - 2*sd(national_level_idealpoint),
+                ymax = mean(national_level_idealpoint) + 2*sd(national_level_idealpoint)),
+                width = 0, color = "#7B1CE3") +
+  geom_text(aes(x = Inf, y = mean(national_level_idealpoint) + 0.075, label = "IdealPoint MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  geom_point(aes(y=national_level_all, x = .5), color = "#1CE37B") +
+  geom_errorbar(aes(y = national_level_all, 
+                x = .5, 
+                ymin = national_level_all - 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all)),
+                ymax = national_level_all + 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all))),
+                width = 0, color = "#1CE37B") +
+  geom_text(data = data.frame(), aes(x = Inf, y = national_level_all, label = "Complete Survey"), 
+            hjust = -.06, size = 4, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot::bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+* Ideal point MRP mean SE: `r round(mean(df_state_idealpoint$idealpoint_sd), 4)*100`%, 
+* Standard MRP mean SE: `r round(mean(df_state_standard$state_sd), 4)*100`%. 
+* Ideal point MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%
+* Standard MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_standard$state_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%.
+
+#### Question 3
+
+> Ban abortions after the 20th week of pregnancy
+
+```{r, fig.height= 3.5, fig.width=12, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+# Standard MRP Results
+if(FALSE){
+  fit_standard3 <- stan_glmer(abortion3 ~ (1 | state) + (1 | age) + (1 | ethnicity) + (1 | educ) + male +
+                     repvote + (1 | region),
+   family = binomial(link = "logit"),
+   data = left_join(df, statelevel_predictors),
+   prior = normal(0, 1, autoscale = TRUE),
+   prior_covariance = decov(scale = 0.50),
+   adapt_delta = 0.99,
+   seed = 1010)
+  saveRDS(fit_standard3, file = "data_public/chapter3/models/individual/fit_standard3.rds")
+} else {
+  fit_standard3 <- readRDS("data_public/chapter3/models/individual/fit_standard3.rds")
+}
+
+P <- posterior_epred(fit_standard3, newdata = left_join(postrat_df, statelevel_predictors))
+national_level_standard <- P %*% postrat_df$n / sum(postrat_df$n)
+
+df_state_standard <- data.frame(state = rep(NA, length(levels(df$state))),
+                       state_mean = rep(NA, length(levels(df$state))),
+                       state_sd = rep(NA, length(levels(df$state))))
+i = 1
+for(s in levels(df$state)){
+  state_estimates <- (P[, which(postrat_df$state==s)] %*% postrat_df$n[which(postrat_df$state==s)]/
+    sum(postrat_df$n[which(postrat_df$state==s)]))
+  df_state_standard$state[i] <- s
+  df_state_standard$state_mean[i] <- mean(state_estimates)
+  df_state_standard$state_sd[i] <- sd(state_estimates)
+  i = i + 1
+}
+
+# Ideal Point MRP Results
+question_number <- 3
+
+ndraws <- 25
+nsims <- 50
+sample_draws <- sample(nrow(df_fit$alpha_pred_raw), size = ndraws)
+question_pred <- matrix(NA, nrow = 12000, ncol = ndraws)
+for(i in 1:ndraws){
+    mu_alpha_preds <- tibble(mu = df_fit$mu_alpha[sample_draws[i]] + df_fit$alpha_pred_raw[sample_draws[i],],
+                       n = postrat_df_numeric$n)
+    tosample <- sample(mu_alpha_preds$mu, size = 1000, prob = mu_alpha_preds$n/sum(mu_alpha_preds$n), replace = TRUE) 
+    tosample <- tosample + rnorm(1000, 0, df_fit$sigma_alpha[sample_draws[i]])
+    mean_alpha <- mean(tosample)
+    sd_alpha <- sd(tosample)
+    
+  for(j in 1:12000){
+    alpha_pred <- mu_alpha_preds$mu[j] + rnorm(nsims, 0, df_fit$sigma_alpha[sample_draws[i]])
+    alpha_pred <- (alpha_pred - mean_alpha)/sd_alpha
+    question_pred[j,i] <- mean(plogis(df_fit$gamma_adj[sample_draws[i], question_number]*(alpha_pred - df_fit$beta_adj[sample_draws[i], question_number])))
+  }
+}
+question_pred <- t(question_pred)
+national_level_idealpoint <- question_pred %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+for(s in 1:max(postrat_df_numeric$state)){
+  state_estimates <- question_pred[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]/
+    sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+  df_state_idealpoint$state[s] <- s
+  df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+}
+df_state_idealpoint$state <- statelevel_predictors$state
+
+national_level_all <- mean(df_all$abortion3, na.rm = TRUE)
+df_state_all <- df_all %>% group_by(state) %>% summarise(state_mean = mean(abortion3), n = n())
+
+# Plot
+df_state_standard$state <- fct_reorder(df_state_standard$state, statelevel_predictors$repvote)
+
+compare1 <- ggplot(data=df_state_standard) +
+  geom_point(aes(x=state, y=state_mean), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=state_mean - 2*state_sd,
+                    ymax=state_mean + 2*state_sd,
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=df_state_idealpoint, aes(x=state, y=idealpoint_mean), color = "#7B1CE3") +
+  geom_errorbar(data=df_state_idealpoint, 
+                aes(ymin=idealpoint_mean - 2*idealpoint_sd, 
+                    ymax=idealpoint_mean + 2*idealpoint_sd, 
+                    x=state), 
+                alpha=.5, width = 0, color = "#7B1CE3") +
+  geom_point(data = df_state_all, aes(x=state, y=state_mean), color = "#1CE37B") +
+  geom_errorbar(data = df_state_all, 
+                aes(ymin=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    ymax=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    x=state), alpha=.5, width = 0, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = data.frame())+
+  geom_point(aes(y=mean(national_level_standard), x = .25), color = "#E37B1C") +
+  geom_errorbar(aes(y = mean(national_level_standard), 
+                x = .25,
+                ymin = mean(national_level_standard) - 2*sd(national_level_standard),
+                ymax = mean(national_level_standard) + 2*sd(national_level_standard)),
+                width = 0, color = "#E37B1C") +
+  geom_text(aes(x = Inf, y = mean(national_level_standard) - 0.075, label = "Standard MRP"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = mean(national_level_idealpoint), x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = mean(national_level_idealpoint), 
+                x = .75, 
+                ymin = mean(national_level_idealpoint) - 2*sd(national_level_idealpoint),
+                ymax = mean(national_level_idealpoint) + 2*sd(national_level_idealpoint)),
+                width = 0, color = "#7B1CE3") +
+  geom_text(aes(x = Inf, y = mean(national_level_idealpoint) + 0.075, label = "IdealPoint MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  geom_point(aes(y=national_level_all, x = .5), color = "#1CE37B") +
+  geom_errorbar(aes(y = national_level_all, 
+                x = .5, 
+                ymin = national_level_all - 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all)),
+                ymax = national_level_all + 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all))),
+                width = 0, color = "#1CE37B") +
+  geom_text(data = data.frame(), aes(x = Inf, y = national_level_all, label = "Complete Survey"), 
+            hjust = -.06, size = 4, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot::bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+* Ideal point MRP mean SE: `r round(mean(df_state_idealpoint$idealpoint_sd), 4)*100`%, 
+* Standard MRP mean SE: `r round(mean(df_state_standard$state_sd), 4)*100`%. 
+* Ideal point MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%
+* Standard MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_standard$state_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%.
+
+#### Question 2
+
+> Permit abortion ONLY in case of rape, incest or when the woman’s life is in danger
+
+```{r, fig.height= 3.5, fig.width=12, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+# Standard MRP Results
+if(FALSE){
+  fit_standard2 <- stan_glmer(abortion2 ~ (1 | state) + (1 | age) + (1 | ethnicity) + (1 | educ) + male +
+                     repvote + (1 | region),
+   family = binomial(link = "logit"),
+   data = left_join(df, statelevel_predictors),
+   prior = normal(0, 1, autoscale = TRUE),
+   prior_covariance = decov(scale = 0.50),
+   adapt_delta = 0.99,
+   seed = 1010)
+  saveRDS(fit_standard2, file = "data_public/chapter3/models/individual/fit_standard2.rds")
+} else {
+  fit_standard2 <- readRDS("data_public/chapter3/models/individual/fit_standard2.rds")
+}
+
+P <- posterior_epred(fit_standard2, newdata = left_join(postrat_df, statelevel_predictors))
+national_level_standard <- P %*% postrat_df$n / sum(postrat_df$n)
+
+df_state_standard <- data.frame(state = rep(NA, length(levels(df$state))),
+                       state_mean = rep(NA, length(levels(df$state))),
+                       state_sd = rep(NA, length(levels(df$state))))
+i = 1
+for(s in levels(df$state)){
+  state_estimates <- (P[, which(postrat_df$state==s)] %*% postrat_df$n[which(postrat_df$state==s)]/
+    sum(postrat_df$n[which(postrat_df$state==s)]))
+  df_state_standard$state[i] <- s
+  df_state_standard$state_mean[i] <- mean(state_estimates)
+  df_state_standard$state_sd[i] <- sd(state_estimates)
+  i = i + 1
+}
+
+# Ideal Point MRP Results
+question_number <- 2
+
+ndraws <- 25
+nsims <- 50
+sample_draws <- sample(nrow(df_fit$alpha_pred_raw), size = ndraws)
+question_pred <- matrix(NA, nrow = 12000, ncol = ndraws)
+for(i in 1:ndraws){
+    mu_alpha_preds <- tibble(mu = df_fit$mu_alpha[sample_draws[i]] + df_fit$alpha_pred_raw[sample_draws[i],],
+                       n = postrat_df_numeric$n)
+    tosample <- sample(mu_alpha_preds$mu, size = 1000, prob = mu_alpha_preds$n/sum(mu_alpha_preds$n), replace = TRUE) 
+    tosample <- tosample + rnorm(1000, 0, df_fit$sigma_alpha[sample_draws[i]])
+    mean_alpha <- mean(tosample)
+    sd_alpha <- sd(tosample)
+    
+  for(j in 1:12000){
+    alpha_pred <- mu_alpha_preds$mu[j] + rnorm(nsims, 0, df_fit$sigma_alpha[sample_draws[i]])
+    alpha_pred <- (alpha_pred - mean_alpha)/sd_alpha
+    question_pred[j,i] <- mean(plogis(df_fit$gamma_adj[sample_draws[i], question_number]*(alpha_pred - df_fit$beta_adj[sample_draws[i], question_number])))
+  }
+}
+question_pred <- t(question_pred)
+national_level_idealpoint <- question_pred %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+for(s in 1:max(postrat_df_numeric$state)){
+  state_estimates <- question_pred[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]/
+    sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+  df_state_idealpoint$state[s] <- s
+  df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+}
+df_state_idealpoint$state <- statelevel_predictors$state
+
+national_level_all <- mean(df_all$abortion2, na.rm = TRUE)
+df_state_all <- df_all %>% group_by(state) %>% summarise(state_mean = mean(abortion2), n = n())
+
+# Plot
+df_state_standard$state <- fct_reorder(df_state_standard$state, statelevel_predictors$repvote)
+
+compare1 <- ggplot(data=df_state_standard) +
+  geom_point(aes(x=state, y=state_mean), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=state_mean - 2*state_sd,
+                    ymax=state_mean + 2*state_sd,
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=df_state_idealpoint, aes(x=state, y=idealpoint_mean), color = "#7B1CE3") +
+  geom_errorbar(data=df_state_idealpoint, 
+                aes(ymin=idealpoint_mean - 2*idealpoint_sd, 
+                    ymax=idealpoint_mean + 2*idealpoint_sd, 
+                    x=state), 
+                alpha=.5, width = 0, color = "#7B1CE3") +
+  geom_point(data = df_state_all, aes(x=state, y=state_mean), color = "#1CE37B") +
+  geom_errorbar(data = df_state_all, 
+                aes(ymin=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    ymax=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    x=state), alpha=.5, width = 0, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = data.frame())+
+  geom_point(aes(y=mean(national_level_standard), x = .25), color = "#E37B1C") +
+  geom_errorbar(aes(y = mean(national_level_standard), 
+                x = .25,
+                ymin = mean(national_level_standard) - 2*sd(national_level_standard),
+                ymax = mean(national_level_standard) + 2*sd(national_level_standard)),
+                width = 0, color = "#E37B1C") +
+  geom_text(aes(x = Inf, y = mean(national_level_standard) - 0.075, label = "Standard MRP"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = mean(national_level_idealpoint), x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = mean(national_level_idealpoint), 
+                x = .75, 
+                ymin = mean(national_level_idealpoint) - 2*sd(national_level_idealpoint),
+                ymax = mean(national_level_idealpoint) + 2*sd(national_level_idealpoint)),
+                width = 0, color = "#7B1CE3") +
+  geom_text(aes(x = Inf, y = mean(national_level_idealpoint) + 0.075, label = "IdealPoint MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  geom_point(aes(y=national_level_all, x = .5), color = "#1CE37B") +
+  geom_errorbar(aes(y = national_level_all, 
+                x = .5, 
+                ymin = national_level_all - 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all)),
+                ymax = national_level_all + 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all))),
+                width = 0, color = "#1CE37B") +
+  geom_text(data = data.frame(), aes(x = Inf, y = national_level_all, label = "Complete Survey"), 
+            hjust = -.06, size = 4, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot::bayesplot_grid(compare1, compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+* Ideal point MRP mean SE: `r round(mean(df_state_idealpoint$idealpoint_sd), 4)*100`%, 
+* Standard MRP mean SE: `r round(mean(df_state_standard$state_sd), 4)*100`%. 
+* Ideal point MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%
+* Standard MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_standard$state_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%.
+
+#### Question 1
+
+> Always allow a woman to obtain an abortion as a matter of choice (reversed)
+
+```{r, fig.height= 3.5, fig.width=12, echo=FALSE, fig.align = "center", warning=FALSE, message=FALSE}
+# Standard MRP Results
+if(FALSE){
+  fit_standard1 <- stan_glmer(abortion1 ~ (1 | state) + (1 | age) + (1 | ethnicity) + (1 | educ) + male +
+                     repvote + (1 | region),
+   family = binomial(link = "logit"),
+   data = left_join(df, statelevel_predictors),
+   prior = normal(0, 1, autoscale = TRUE),
+   prior_covariance = decov(scale = 0.50),
+   adapt_delta = 0.99,
+   seed = 1010)
+  saveRDS(fit_standard1, file = "data_public/chapter3/models/individual/fit_standard1.rds")
+} else {
+  fit_standard1 <- readRDS("data_public/chapter3/models/individual/fit_standard1.rds")
+}
+
+P <- posterior_epred(fit_standard1, newdata = left_join(postrat_df, statelevel_predictors))
+national_level_standard <- P %*% postrat_df$n / sum(postrat_df$n)
+
+df_state_standard <- data.frame(state = rep(NA, length(levels(df$state))),
+                       state_mean = rep(NA, length(levels(df$state))),
+                       state_sd = rep(NA, length(levels(df$state))))
+i = 1
+for(s in levels(df$state)){
+  state_estimates <- (P[, which(postrat_df$state==s)] %*% postrat_df$n[which(postrat_df$state==s)]/
+    sum(postrat_df$n[which(postrat_df$state==s)]))
+  df_state_standard$state[i] <- s
+  df_state_standard$state_mean[i] <- mean(state_estimates)
+  df_state_standard$state_sd[i] <- sd(state_estimates)
+  i = i + 1
+}
+
+# Ideal Point MRP Results
+question_number <- 1
+
+ndraws <- 25
+nsims <- 50
+sample_draws <- sample(nrow(df_fit$alpha_pred_raw), size = ndraws)
+question_pred <- matrix(NA, nrow = 12000, ncol = ndraws)
+for(i in 1:ndraws){
+    mu_alpha_preds <- tibble(mu = df_fit$mu_alpha[sample_draws[i]] + df_fit$alpha_pred_raw[sample_draws[i],],
+                       n = postrat_df_numeric$n)
+    tosample <- sample(mu_alpha_preds$mu, size = 1000, prob = mu_alpha_preds$n/sum(mu_alpha_preds$n), replace = TRUE) 
+    tosample <- tosample + rnorm(1000, 0, df_fit$sigma_alpha[sample_draws[i]])
+    mean_alpha <- mean(tosample)
+    sd_alpha <- sd(tosample)
+    
+  for(j in 1:12000){
+    alpha_pred <- mu_alpha_preds$mu[j] + rnorm(nsims, 0, df_fit$sigma_alpha[sample_draws[i]])
+    alpha_pred <- (alpha_pred - mean_alpha)/sd_alpha
+    question_pred[j,i] <- mean(plogis(df_fit$gamma_adj[sample_draws[i], question_number]*(alpha_pred - df_fit$beta_adj[sample_draws[i], question_number])))
+  }
+}
+question_pred <- t(question_pred)
+national_level_idealpoint <- question_pred %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                       idealpoint_mean = NA,
+                       idealpoint_sd = NA)
+for(s in 1:max(postrat_df_numeric$state)){
+  state_estimates <- question_pred[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]/
+    sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+  df_state_idealpoint$state[s] <- s
+  df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+  df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+}
+df_state_idealpoint$state <- statelevel_predictors$state
+
+national_level_all <- mean(df_all$abortion1, na.rm = TRUE)
+df_state_all <- df_all %>% group_by(state) %>% summarise(state_mean = mean(abortion1), n = n())
+
+# Plot
+df_state_standard$state <- fct_reorder(df_state_standard$state, statelevel_predictors$repvote)
+
+compare1 <- ggplot(data=df_state_standard) +
+  geom_point(aes(x=state, y=state_mean), color = "#E37B1C") +
+  geom_errorbar(aes(ymin=state_mean - 2*state_sd,
+                    ymax=state_mean + 2*state_sd,
+                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+  geom_point(data=df_state_idealpoint, aes(x=state, y=idealpoint_mean), color = "#7B1CE3") +
+  geom_errorbar(data=df_state_idealpoint, 
+                aes(ymin=idealpoint_mean - 2*idealpoint_sd, 
+                    ymax=idealpoint_mean + 2*idealpoint_sd, 
+                    x=state), 
+                alpha=.5, width = 0, color = "#7B1CE3") +
+  geom_point(data = df_state_all, aes(x=state, y=state_mean), color = "#1CE37B") +
+  geom_errorbar(data = df_state_all, 
+                aes(ymin=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    ymax=state_mean - 2*sqrt((state_mean*(1-state_mean))/n), 
+                    x=state), alpha=.5, width = 0, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1), 
+                     labels=c("0%","25%","50%","75%","100%"), 
+                     expand=c(0,0))+
+  coord_cartesian(ylim=c(0, 1)) +
+  theme_bw()+
+  labs(x="States",y="Support")+
+  theme(legend.position="none",
+        axis.title=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10))
+
+compare2 <- ggplot(data = data.frame())+
+  geom_point(aes(y=mean(national_level_standard), x = .25), color = "#E37B1C") +
+  geom_errorbar(aes(y = mean(national_level_standard), 
+                x = .25,
+                ymin = mean(national_level_standard) - 2*sd(national_level_standard),
+                ymax = mean(national_level_standard) + 2*sd(national_level_standard)),
+                width = 0, color = "#E37B1C") +
+  geom_text(aes(x = Inf, y = mean(national_level_standard) - 0.075, label = "Standard MRP"), 
+            hjust = -.05, size = 4, color = "#E37B1C") +
+  geom_point(aes(y = mean(national_level_idealpoint), x = .75), color = "#7B1CE3") +
+  geom_errorbar(aes(y = mean(national_level_idealpoint), 
+                x = .75, 
+                ymin = mean(national_level_idealpoint) - 2*sd(national_level_idealpoint),
+                ymax = mean(national_level_idealpoint) + 2*sd(national_level_idealpoint)),
+                width = 0, color = "#7B1CE3") +
+  geom_text(aes(x = Inf, y = mean(national_level_idealpoint) + 0.075, label = "IdealPoint MRP"), 
+            hjust = -.05, size = 4, color = "#7B1CE3") +
+  geom_point(aes(y=national_level_all, x = .5), color = "#1CE37B") +
+  geom_errorbar(aes(y = national_level_all, 
+                x = .5, 
+                ymin = national_level_all - 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all)),
+                ymax = national_level_all + 2*sqrt((national_level_all*(1-national_level_all))/nrow(df_all))),
+                width = 0, color = "#1CE37B") +
+  geom_text(data = data.frame(), aes(x = Inf, y = national_level_all, label = "Complete Survey"), 
+            hjust = -.06, size = 4, color = "#1CE37B") +
+  scale_y_continuous(breaks=c(0,.25,.5,.75,1),
+                     labels=c("0%","25%","50%","75%","100%"),
+                     limits=c(0,1),expand=c(0,0))+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0), breaks=c(.25, .75)) +
+  coord_cartesian(clip = 'off') +
+  theme_bw()+
+  labs(x="Population",y="")+
+   theme(legend.position="none",
+        axis.title.y=element_blank(),
+        axis.title.x=element_text(size=10, margin = margin(t = 19, r = 0, b = , l = 0)),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=10),
+        plot.margin = margin(5.5, 105, 5.5, 5.5, "pt")
+        )
+
+bayesplot::bayesplot_grid(compare1,compare2, 
+               grid_args = list(nrow=1, widths = c(5,1.4)))
+```
+
+* Ideal point MRP mean SE: `r round(mean(df_state_idealpoint$idealpoint_sd), 4)*100`%, 
+* Standard MRP mean SE: `r round(mean(df_state_standard$state_sd), 4)*100`%. 
+* Ideal point MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%
+* Standard MRP MAE with respect to results from full-sample CCES: `r round(mean(abs(df_state_standard$state_mean - df_state_all$state_mean), na.rm=TRUE), 4)*100`%.
+
+### Comparing ideal point and standard MRP using fake-data simulation
+
+Although with some exceptions, the ideal point MRP estimates seem to have lower standard errors and tend to be closer to the full-sample CCES. To compare these two methods in a more controlled setting we use fake data simulation. The DGP assumess each of the 9 simulated questions reflects a (unique) true ideal point with varying difficulty and discrimination. The ideal point is in turn determined by a set of demographic-geographic predictors and some normally-distributed random error. We simulate a population of 10 million individuals based on the weights in the poststratification table, and then obtain a sample of 3,000 participants that is then used for the ideal point MRP and standard MRP state-level estimation for each question. These state-level estimates are evaluated in terms of their average standard error and mean absolute error with respect to the true support in the population.
+
+```{r, fig.height= 12, fig.width=12, echo=FALSE, fig.align = "center", echo = FALSE, message=FALSE, warning=FALSE}
+set.seed(1010)
+# Draw from the poststratification table
+postrat_df_numeric <- data.frame(sapply(left_join(postrat_df, statelevel_predictors), as.numeric))
+df_fake <- postrat_df_numeric %>% 
+  select(state, repvote, region, age, educ, male, ethnicity) %>% 
+  sample_n(size = 1e7, replace = TRUE, weight = (postrat_df$n)/sum(postrat_df$n))
+
+# Similuate dataframe with state-level characteristics and
+# obtain state-level effects
+statelevel <- postrat_df_numeric %>% select(state, repvote, region) %>% distinct()
+statelevel$effect <- 0.25*statelevel$repvote + c(-.03, -0.04, 0.06, 0.01)[statelevel$region] + rnorm(nrow(statelevel), 0, 0.05)
+
+# Simulate ideal points
+df_fake$idealpoint <- statelevel$effect[df_fake$state] + 
+  c(0.054, -0.13, 0.05, 0.02)[df_fake$ethnicity] +
+  c(-0.17, 0.10, -0.06, 0.06, 0.10, 0.17)[df_fake$age] + 
+  c(0.24, 0.16, 0.06, -0.13, -0.32)[df_fake$educ] +
+  0.17*df_fake$male + 
+  rnorm(nrow(df_fake), 0, 1)
+df_fake$idealpoint <- (df_fake$idealpoint - mean(df_fake$idealpoint))/sd(df_fake$idealpoint)
+
+# Simulate ideal points for poststratification table
+postrat_df_numeric$idealpoint <- statelevel$effect[postrat_df_numeric$state] +
+  c(0.054, -0.13, 0.05, 0.02)[postrat_df_numeric$ethnicity] +
+  c(-0.17, 0.10, -0.06, 0.06, 0.10, 0.17)[postrat_df_numeric$age] +
+  c(0.24, 0.16, 0.06, -0.13, -0.32)[postrat_df_numeric$educ] +
+  0.17*postrat_df_numeric$male
+
+# Define beta and gamma for each question, obtain the probability of supporting each
+# statement based on the idealpoint, and simulate outcomes for each user
+gammas <- c(2.0, 3.2, 1.7,  2.7,  1.3, 2.0,  0.8, 2.4, 1.8)
+betas <- c(0.2, 0.0, 0.6, -0.7, -1.5, 0.3, -0.1, 0.8, 1.1)
+ 
+df_fake$question1 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[1]*(df_fake$idealpoint - betas[1])))
+df_fake$question2 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[2]*(df_fake$idealpoint - betas[2])))
+df_fake$question3 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[3]*(df_fake$idealpoint - betas[3])))
+df_fake$question4 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[4]*(df_fake$idealpoint - betas[4])))
+df_fake$question5 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[5]*(df_fake$idealpoint - betas[5])))
+df_fake$question6 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[6]*(df_fake$idealpoint - betas[6])))
+df_fake$question7 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[7]*(df_fake$idealpoint - betas[7])))
+df_fake$question8 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[8]*(df_fake$idealpoint - betas[8])))
+df_fake$question9 <- rbinom(nrow(df_fake), size = 1, prob = plogis(gammas[9]*(df_fake$idealpoint - betas[9])))
+
+# Get samples of different sizes from the true population
+types <- c(5000, 4500, 4000, 3500, 3000, 2500, 2000, 1500, 1000)
+df_fake_sample <- list()
+df_fake_sample[[1]] <- df_fake %>% sample_n(5000)
+for(n in 2:9){
+  df_fake_sample[[n]] <- df_fake_sample[[n-1]] %>% sample_n(types[n])
+}
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+# Fit the idealpoint and standard models
+#mean(gammas[c(4,5,9)])
+#mean(gammas[c(1,2,4,5,7,9)])
+if(FALSE){
+  fit_id <- stan_model("data_public/chapter3/idealpoint.stan")
+  for(n in 1:9){
+    df_fake_sample[[10-n]]$subject <- 1:nrow(df_fake_sample[[10-n]])
+    # df_melted <- df_fake_sample[[10-n]] %>% select(starts_with("question"), state, ethnicity, age, educ, male, subject) %>% 
+    #   melt(id.vars = c("state", "age", "ethnicity", "educ", "male", "subject"))
+    df_melted <- df_fake_sample[[10-n]] %>% select(question4, question5, question9, state, ethnicity, age, educ, male, subject) %>% 
+      melt(id.vars = c("state", "age", "ethnicity", "educ", "male", "subject"))
+    data <- list(J = length(unique(df_melted$subject)), 
+                   K = length(unique(df_melted$variable)), 
+                   N = nrow(df_melted), 
+                   S = nrow(statelevel),
+                   P = nrow(postrat_df_numeric),
+                   participant = df_melted$subject, 
+                   question = as.integer(df_melted$variable), 
+                   state = df_melted$state,
+                   age = df_melted$age,
+                   ethnicity = df_melted$ethnicity,
+                   educ = df_melted$educ,
+                   male = df_melted$male,
+                   region = statelevel$region,
+                   repvote = statelevel$repvote,
+                   postrat_state = postrat_df_numeric$state,
+                   postrat_age = postrat_df_numeric$age,
+                   postrat_ethnicity = postrat_df_numeric$ethnicity,
+                   postrat_educ = postrat_df_numeric$educ,
+                   postrat_male = postrat_df_numeric$male,
+                   y = df_melted$value)
+    fit_relevant <- NULL
+    fit_relevant <- sampling(fit_id, data = data, iter = 1500, warmup = 500, chains = 5,
+                        control = list(adapt_delta = 0.99, max_treedepth = 14),
+                        refresh = 50)
+    saveRDS(fit_relevant, file = paste0("data_public/chapter3/models/fakedata2/fit_fake_idealpoint3_", types[[10-n]], ".rds"))
+    
+    
+      df_melted <- df_fake_sample[[10-n]] %>% select(question1, question2, question4, question5, question7, question9, state, ethnicity, age, educ, male, subject) %>% 
+      melt(id.vars = c("state", "age", "ethnicity", "educ", "male", "subject"))
+    data <- list(J = length(unique(df_melted$subject)), 
+                   K = length(unique(df_melted$variable)), 
+                   N = nrow(df_melted), 
+                   S = nrow(statelevel),
+                   P = nrow(postrat_df_numeric),
+                   participant = df_melted$subject, 
+                   question = as.integer(df_melted$variable), 
+                   state = df_melted$state,
+                   age = df_melted$age,
+                   ethnicity = df_melted$ethnicity,
+                   educ = df_melted$educ,
+                   male = df_melted$male,
+                   region = statelevel$region,
+                   repvote = statelevel$repvote,
+                   postrat_state = postrat_df_numeric$state,
+                   postrat_age = postrat_df_numeric$age,
+                   postrat_ethnicity = postrat_df_numeric$ethnicity,
+                   postrat_educ = postrat_df_numeric$educ,
+                   postrat_male = postrat_df_numeric$male,
+                   y = df_melted$value)
+    fit_relevant <- NULL
+    fit_relevant <- sampling(fit_id, data = data, iter = 1500, warmup = 500, chains = 5,
+                        control = list(adapt_delta = 0.99, max_treedepth = 14),
+                        refresh = 50)
+    saveRDS(fit_relevant, file = paste0("data_public/chapter3/models/fakedata2/fit_fake_idealpoint6_", types[[10-n]], ".rds"))
+        
+    if(FALSE){
+      for(i in 1:9){
+        formula <- paste0("question", i, "~ (1 | state) + (1 | age) + (1 | ethnicity) + (1 | educ) + male + repvote + (1 | region)")
+        fit_standard <- stan_glmer(formula,
+         family = binomial(link = "logit"),
+         data = df_fake_sample[[n]],
+         prior = normal(0, 1, autoscale = TRUE),
+         prior_covariance = decov(scale = 0.50),
+         adapt_delta = 0.99,
+         seed = 1010)
+        saveRDS(fit_standard, file = paste0("data_public/chapter3/models/fakedata2/fit_fake_standard", i, "_", types[[n]], ".rds"))
+      }
+    }
+  }
+}
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+types <- c(5000, 4500, 4000, 3500, 3000, 2500, 2000, 1500, 1000)
+
+if(FALSE){
+  compare <- list()
+  ae <- list()
+  se <- list()
+  ip_est <- array(NA, c(9, 50, 9))
+  st_est <- array(NA, c(9, 50, 9))
+  ip_se <- array(NA, c(9, 50, 9))
+  st_se <- array(NA, c(9, 50, 9))
+  
+  for(n in 1:length(types)){
+    df_fit <- rstan::extract(readRDS(file = paste0("data_public/chapter3/models/fakedata2/fit_fake_idealpoint9_", types[n], ".rds")))
+    for(q in 1:9){
+      question_number <- q
+      question <- q
+        ## Results Standard MRP for sample
+        fit_standard <- readRDS(paste0("data_public/chapter3/models/fakedata2/fit_fake_standard", q, "_", types[n], ".rds"))
+        P <- posterior_epred(fit_standard, newdata = postrat_df_numeric)
+        national_level_standard <- P %*% postrat_df$n / sum(postrat_df$n)
+        df_state_standard <- data.frame(state = 1:50,
+                               state_mean = NA,
+                               state_sd = NA)
+        for(s in 1:50){
+          state_estimates <- (P[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]/
+            sum(postrat_df$n[which(postrat_df_numeric$state==s)]))
+          df_state_standard$state_mean[s] <- mean(state_estimates)
+          df_state_standard$state_sd[s] <- sd(state_estimates)
+        }
+        
+        ## Results Ideal Point MRP for 5000 sample
+        ndraws <- 25
+        nsims <- 20
+        sample_draws <- sample(nrow(df_fit$alpha_pred_raw), size = ndraws)
+        question_pred <- matrix(NA, nrow = 12000, ncol = ndraws)
+        for(i in 1:ndraws){
+          mu_alpha_preds <- tibble(mu = df_fit$mu_alpha[sample_draws[i]] + df_fit$alpha_pred_raw[sample_draws[i],],
+                             n = postrat_df_numeric$n)
+          tosample <- sample(mu_alpha_preds$mu, size = 1000, prob = mu_alpha_preds$n/sum(mu_alpha_preds$n), replace = TRUE) 
+          tosample <- tosample + rnorm(1000, 0, df_fit$sigma_alpha[sample_draws[i]])
+          mean_alpha <- mean(tosample)
+          sd_alpha <- sd(tosample)
+          
+        for(j in 1:12000){
+          alpha_pred <- mu_alpha_preds$mu[j] + rnorm(nsims, 0, df_fit$sigma_alpha[sample_draws[i]])
+          alpha_pred <- (alpha_pred - mean_alpha)/sd_alpha
+          question_pred[j,i] <- mean(plogis(df_fit$gamma_adj[sample_draws[i], question_number]*(alpha_pred - df_fit$beta_adj[sample_draws[i], question_number])))
+        }
+      }
+        
+        national_level_idealpoint <- t(question_pred) %*% postrat_df_numeric$n / sum(postrat_df_numeric$n)
+        df_state_idealpoint <- data.frame(state = 1:max(postrat_df_numeric$state),
+                               idealpoint_mean = NA,
+                               idealpoint_sd = NA)
+        for(s in 1:max(postrat_df_numeric$state)){
+          state_estimates <- t(question_pred)[, which(postrat_df_numeric$state==s)] %*% postrat_df$n[which(postrat_df_numeric$state==s)]/
+            sum(postrat_df_numeric$n[which(postrat_df_numeric$state==s)])
+          df_state_idealpoint$idealpoint_mean[s] <- mean(state_estimates)
+          df_state_idealpoint$idealpoint_sd[s] <- sd(state_estimates)
+        }
+        
+        ## True results for full sample
+        national_level_all <- mean(df_fake[,paste0("question", question_number)])
+        df_state_all <- df_fake %>% group_by(state) %>% summarise_at(vars(paste0("question", question)), funs(mean = mean, length = length))
+        
+        ip_est[n,,q] <- df_state_idealpoint$idealpoint_mean - df_state_all$mean 
+        st_est[n,,q] <- df_state_standard$state_mean - df_state_all$mean
+        ip_se[n,,q] <- df_state_idealpoint$idealpoint_sd
+        st_se[n,,q] <- df_state_standard$state_sd
+        
+        # Plot
+        if (types[[n]]==3000){
+          df_state_standard$state <- fct_reorder(factor(df_state_standard$state), statelevel_predictors$repvote)
+          df_state_idealpoint$state <- fct_reorder(factor(df_state_idealpoint$state), statelevel_predictors$repvote)
+          df_state_all$state <- fct_reorder(factor(df_state_all$state), statelevel_predictors$repvote)
+          compare[[q]] <- ggplot(data=df_state_standard) +
+                  geom_point(aes(x=state, y=state_mean), color = "#E37B1C") +
+                  geom_errorbar(aes(ymin=state_mean - 2*state_sd,
+                                    ymax=state_mean + 2*state_sd,
+                                    x=state), alpha=.5, width = 0, color = "#E37B1C") +
+                  geom_point(data=df_state_idealpoint, aes(x=state, y=idealpoint_mean), color = "#7B1CE3") +
+                  geom_errorbar(data=df_state_idealpoint,
+                                aes(ymin=idealpoint_mean - 2*idealpoint_sd,
+                                    ymax=idealpoint_mean + 2*idealpoint_sd,
+                                    x=state),
+                                alpha=.5, width = 0, color = "#7B1CE3") +
+                  geom_point(data = df_state_all, aes(x=state, y=mean), color = "#1CE37B") +
+                  geom_errorbar(data = df_state_all,
+                                aes(ymin=mean - 2*sqrt((mean*(1-mean))/length),
+                                    ymax=mean - 2*sqrt((mean*(1-mean))/length),
+                                    x=state), alpha=.5, width = 0, color = "#1CE37B") +
+                  scale_y_continuous(breaks=seq(0,1, by = 0.1),
+                                     labels=paste0(seq(0, 1, by = 0.1)*100, "%"),
+                                     expand=c(0,0)) +
+                  theme_bw() +
+                  labs(x="States",y="Support") +
+                  theme(legend.position="none",
+                        axis.title=element_text(size=10),
+                        axis.text.y=element_text(size=10),
+                        axis.text.x=element_text(angle=90,size=8, vjust=0.3),
+                        legend.title=element_text(size=10),
+                        legend.text=element_text(size=10)) +
+                  annotate("text", y = max(df_state_all$mean) + 1*0.05, x = 10, color = "#7B1CE3",
+                           label = paste0("MAE for ideal point model: ", round(mean(abs(df_state_idealpoint$idealpoint_mean - df_state_all$mean)), 3)*100, "%")) +
+                  annotate("text", y = max(df_state_all$mean) - 1*0.05, x = 10, color = "#7B1CE3",
+                           label = paste0("Mean SE for ideal point model: ", round(mean(sd(df_state_idealpoint$idealpoint_sd)), 3)*100, "%")) +
+                  annotate("text", y = max(df_state_all$mean) + 0*0.05, x = 10, color = "#E37B1C", 
+                           label = paste0("MAE for standard model: ", round(mean(abs(df_state_standard$state_mean - df_state_all$mean)), 3)*100, "%")) +
+                  annotate("text", y = max(df_state_all$mean) - 2*0.05, x = 10, color = "#E37B1C",
+                           label = paste0("Mean SE for standard model: ", round(mean(sd(df_state_standard$state_sd)), 3)*100, "%")) +
+                  ggtitle(paste0("Question ", question_number, " (Beta = ", betas[q], ", Gamma = ", gammas[q], ")"))
+        }
+    }
+  }
+  saveRDS(compare, file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_plots.rds")
+  saveRDS(ip_est, file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_ip_est.rds")
+  saveRDS(ip_se, file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_ip_se.rds")
+  saveRDS(st_est, file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_st_est.rds")
+  saveRDS(st_se, file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_st_se.rds")
+} else {
+  compare <- readRDS(file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_plots.rds")
+  ip_est <- readRDS(file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_ip_est.rds")
+  ip_se <- readRDS(file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_ip_se.rds")
+  st_est <- readRDS(file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_st_est.rds")
+  st_se <- readRDS(file = "data_public/chapter3/rdata/IND_QUESTION_fake_data_st_se.rds")
+}
+```
+
+Below the plot the estimates for three of the simulated questions.
+
+```{r, fig.height = 7, fig.width=9, echo=FALSE, fig.align = "center", echo = FALSE, message=FALSE, warning=FALSE}
+grid.arrange(compare[[2]], compare[[6]], compare[[9]])
+```
+
+Instead of focusing solely on the results from the 3,000 person sample, we will take samples between $N = 1000$ and $N = 5000$ from the simulated population and compare the results of the ideal point MRP and standard MRP on each of the 9 questions.
+
+```{r, fig.width=12, fig.height=6, echo = FALSE, message=FALSE, warning=FALSE}
+ip_est_melted <- as.data.frame(apply(ip_est, c(1,3), function(x){mean(abs(x))}), 
+                               col.names = paste0("Q", 1:9), 
+                               row.names = paste0("N = ", types)) %>% 
+  mutate(T = rownames(.)) %>% melt(id.vars = "T", value.name = "idealpoint")
+
+st_est_melted <- as.data.frame(apply(st_est, c(1,3), function(x){mean(abs(x))}), 
+                               col.names = paste0("Q", 1:9), 
+                               row.names = paste0("N = ", types)) %>% 
+  mutate(T = rownames(.)) %>% melt(id.vars = "T", value.name = "standard")
+
+est_plot <- left_join(ip_est_melted, st_est_melted) %>% mutate(T = factor(T)) %>% ggplot(aes(x = idealpoint, y = standard, color = variable)) + 
+  geom_point() + geom_abline(intercept = 0, slope = 1) + facet_wrap(vars(T)) + 
+  theme_bw() + theme(legend.position = "none") + coord_fixed(xlim = c(0.005, 0.03), ylim = c(0.005, .03)) +
+  ylab("MAE Standard MRP") + xlab("MAE Ideal Point MRP") + 
+  scale_y_continuous(labels = scales::percent, n.breaks = 3) + 
+  scale_x_continuous(labels = scales::percent, n.breaks = 3) + ggtitle("Mean Absolute Error")
+
+ip_se_melted <- as.data.frame(apply(ip_se, c(1,3), function(x){mean(abs(x))}), 
+                               col.names = paste0("Q", 1:9), 
+                               row.names = paste0("N = ", types)) %>% 
+  mutate(T = rownames(.)) %>% melt(id.vars = "T", value.name = "idealpoint")
+
+st_se_melted <- as.data.frame(apply(st_se, c(1,3), function(x){mean(abs(x))}), 
+                               col.names = paste0("Q", 1:9), 
+                               row.names = paste0("N = ", types)) %>% 
+  mutate(T = rownames(.)) %>% melt(id.vars = "T", value.name = "standard")
+
+
+se_plot <- left_join(ip_se_melted, st_se_melted) %>% mutate(T = factor(T)) %>% ggplot(aes(x = idealpoint, y = standard, color = variable)) + 
+  geom_point() + geom_abline(intercept = 0, slope = 1) + facet_wrap(vars(T)) + 
+  theme_bw() + theme(legend.position = "none") + coord_fixed(xlim = c(0.00, 0.05), ylim = c(0.00, .05)) +
+  ylab("Mean SE Standard MRP") + xlab("Mean SE Ideal Point MRP") + 
+  scale_y_continuous(labels = scales::percent, n.breaks = 3) + 
+  scale_x_continuous(labels = scales::percent, n.breaks = 3) + ggtitle("Mean Standard Error")
+
+grid.arrange(est_plot, se_plot, nrow = 1)
+```
+
+With very few exceptions, the estimates from the ideal point MRP result in a lower MAE and mean SE for all the question and for all the different sample sizes. To further emphasize this point, we plot the average MAE and mean SE across questions as a function of method and sample size.
+
+```{r, fig.width=9, fig.height=2.5, echo = FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+est_plot <- left_join(ip_est_melted, st_est_melted) %>% group_by(T) %>% 
+            summarise(idealpoint = mean(idealpoint), standard = mean(standard)) %>% 
+            melt(id.vars = "T") %>% mutate(T = readr::parse_number(T)) %>%
+            ggplot(aes(x = T, y = value, color = variable)) + geom_point() + geom_line() + theme_bw() + 
+            scale_y_continuous(labels = scales::percent_format(accuracy = NULL)) + guides(color=FALSE) + 
+            xlab("Number of Survey Respondents") + ylab("Mean Absolute Error")
+
+se_plot <- left_join(ip_se_melted, st_se_melted) %>% group_by(T) %>% 
+            summarise(idealpoint = mean(idealpoint), standard = mean(standard)) %>% 
+            melt(id.vars = "T") %>% mutate(T = readr::parse_number(T)) %>%
+            ggplot(aes(x = T, y = value, color = variable)) + geom_point() + geom_line() + theme_bw() + 
+            scale_y_continuous(labels = scales::percent_format(accuracy = NULL)) +
+            xlab("Number of Survey Respondents") + ylab("Mean Standard Error") + 
+            scale_color_discrete(name = "Model", labels = c("Ideal Point", "Standard"))
+
+bayesplot::bayesplot_grid(est_plot, se_plot, grid_args = list(nrow=1, widths = c(1,1.27)))
+```
+
+```{r, echo = FALSE}
+# names(gammas) <- paste0("V", 1:9)
+# data.frame(gammas) %>% mutate(variable = rownames(.)) %>%
+#   right_join(left_join(ip_se_melted, st_se_melted), data.frame(gammas), by = "variable") %>%
+#   mutate(diff = standard - idealpoint) %>%
+#   filter(T == "N = 3000") %>%
+#   ggplot(aes(x = gammas, y = diff)) + geom_point()
+# # 
+# names(gammas) <- paste0("V", 1:9)
+# data.frame(gammas) %>% mutate(variable = rownames(.)) %>%
+#   right_join(left_join(ip_est_melted, st_est_melted), data.frame(gammas), by = "variable") %>%
+#   mutate(diff = standard - idealpoint) %>%
+#   filter(T == "N = 5000") %>%
+#   ggplot(aes(x = gammas, y = diff)) + geom_point()
+```
+
+### A note of caution
+
+We have shown that the ideal point MRP tends to perform better than standard MRP using both CCES data and fake data. This improvement is due to the model being able to capture useful information from other questions and, thus, provide better estimates for the question of interest. However, ideal point MRP could be detrimental relative to standard MRP if the questions were not relevant with respect to the same latent construct. Our CCES data used six questions that, although obviously slightly different in terms of the position they intend to measure, all were closely related to a general attitude towards abortion. Conversely, including unrelated questions, such as support for certain foreign policy, could negatively influence our estimates. Therefore, we would restrict the use of ideal point MRP to situations where there is a clear convergence between the survey items.
+
+## Concluding remarks
+
+This section has introduced ideal point MRP and explored its use in two different applications:
+
+* Obtaining sub-national (or sub-group) estimates of latent attitudes using multiple survey items: Based on a set of related questions about abortion, we used ideal point MRP to produce state-level estimates of an _Abortion Opposition Index_. This method easily handles sparseness (i.e. when each respondent has not answered each question), and even when this is not an issue it can provide an advantage over naively summing the dichotomous responses when the questions have different discriminatory power -- which is, in practice, always the case.
+
+* Improving estimates for an individual question: Ideal point MRP can also present an advantage over standard MRP when our interest is focused in one single question as long as the surveys includes other related items. In this situation, standard MRP only considers the question of interest, ignoring the responses to the other relevant questions. In contrast, the ideal point model is able to consider the relevant information contained in the other related items, and thus provides better estimates with smaller uncertainty. This advantage can be especially consequential in surveys with a small sample size.
+
+## Appendix: Stan code
+
+```{stan, output.var="irtmodel", eval = FALSE}
+//
+// Ideal Point Multilevel Modeling and Postratification
+//
+
+
+data {
+  int<lower=1> J; //Participants
+  int<lower=1> K; //Questions
+  int<lower=1> N; //no. of observations
+  int<lower=1> S; //no. of states
+  int<lower=1> P; //no. of states
+  int<lower=1, upper=J> participant[N]; // Participant for observation n
+  int<lower=1, upper=K> question[N]; // Question for observation n
+  int<lower=1, upper=S> state[N]; // State for observation n
+  int<lower=1, upper=6> age[N]; // Age for observation n
+  int<lower=1, upper=4> ethnicity[N]; // Ethnicity for observation n
+  int<lower=1, upper=5> educ[N]; // Education for observation n
+  real<lower=-0.5, upper=0.5> male[N]; // Gender for observation n
+  int<lower=0, upper=4> region[S]; // Region for state s
+  real repvote[S]; // Republican voteshare for state s
+  int<lower=0, upper=1> y[N]; // Support for observation n
+  int<lower=1, upper=S> postrat_state[P];
+  int<lower=1, upper=6> postrat_age[P];
+  int<lower=1, upper=4> postrat_ethnicity[P];
+  int<lower=1, upper=5> postrat_educ[P];
+  real<lower=-0.5, upper=0.5> postrat_male[P];
+}
+parameters {
+  vector[S] alpha_state_raw;
+  vector[6] alpha_age_raw;
+  vector[5] alpha_educ_raw;
+  vector[4] alpha_ethnicity_raw;
+  vector[4] alpha_region_raw;
+  real beta_male;
+  real beta_repvote;
+  real<lower=0> sigma_state;
+  real<lower=0> sigma_age;
+  real<lower=0> sigma_ethnicity;
+  real<lower=0> sigma_educ;
+  real<lower=0> sigma_region;
+
+  real mu_alpha;
+  real<lower=0> sigma_alpha;
+  real mu_beta;
+  real<lower=0> sigma_beta;
+  real<lower=0> mu_gamma;
+  real<lower=0> sigma_gamma;
+
+  vector[K] beta_raw;
+  vector[J] alpha_raw;
+  vector<lower=0>[K] gamma_raw;
+}
+transformed parameters{
+  vector[6] alpha_age = 0 + sigma_age*alpha_age_raw;
+  vector[5] alpha_educ = 0 + sigma_educ*alpha_educ_raw;
+  vector[4] alpha_ethnicity = 0 + sigma_ethnicity*alpha_ethnicity_raw;
+  vector[4] alpha_region = 0 + sigma_region*alpha_region_raw;
+  vector[K] beta = mu_beta + sigma_beta*beta_raw;
+  vector[K] gamma = mu_gamma + sigma_gamma*gamma_raw;
+
+  vector[S] alpha_state;
+  vector[J] alpha;
+
+  real alpha_mean;
+  real alpha_sd;
+  vector[J] alpha_adj;
+  vector[K] beta_adj;
+  vector<lower=0>[K] gamma_adj;
+
+  for(s in 1:S)
+    alpha_state[s] = alpha_region[region[s]] + beta_repvote*repvote[s] + sigma_state*alpha_state_raw[s];
+  for (j in 1:J)
+    alpha[j] = mu_alpha + alpha_state[state[j]] + alpha_age[age[j]] + alpha_ethnicity[ethnicity[j]] + alpha_educ[educ[j]] + beta_male*male[j] + sigma_alpha*alpha_raw[j];
+
+  alpha_mean = mean(alpha);
+  alpha_sd = sd(alpha);
+  alpha_adj = (alpha - alpha_mean)/alpha_sd;
+  beta_adj = (beta - alpha_mean)/alpha_sd;
+  gamma_adj = gamma*alpha_sd;
+}
+
+
+
+model {
+  //priors on predictors
+  sigma_state ~ exponential(0.5); // prior for sigma_state
+  sigma_age ~ exponential(0.5); // prior for sigma_age
+  sigma_ethnicity ~ exponential(0.5); // prior for sigma_ethnicity
+  sigma_educ ~ exponential(0.5); // prior for sigma_educ
+  sigma_region ~ exponential(0.5); // prior for sigma_educ
+  beta_male ~ normal(0, 2); // prior for beta_male
+  beta_repvote ~ normal(0, 2); // prior for beta_repvote
+
+  //priors on parameters
+  mu_beta ~ normal(0, 2); // prior for mu_beta
+  sigma_beta ~ exponential(1); // prior for sigma_beta
+  mu_gamma ~ normal(0, 2); // prior for mu_gamma
+  sigma_gamma ~ exponential(1); // prior for sigma_gamma
+
+  alpha_state_raw ~ std_normal(); // implies alpha_state ~ normal(alpha_region, sigma_state)
+  alpha_age_raw ~ std_normal(); // implies alpha_age ~ normal(0, sigma_age)
+  alpha_ethnicity_raw ~ std_normal(); // implies alpha_ethnicity ~ normal(0, sigma_ethnicity)
+  alpha_educ_raw ~ std_normal(); // implies alpha_educ ~ normal(0, sigma_educ)
+  alpha_region_raw ~ std_normal(); // implies alpha_region ~ normal(0, sigma_region)
+
+  gamma_raw ~ std_normal(); // implies beta ~ normal(mu_beta, sigma_beta)
+  beta_raw ~ std_normal(); // implies beta ~ normal(mu_beta, sigma_beta)
+  alpha_raw ~ std_normal(); // implies alpha ~ normal(mu_alpha + alpha_state + alpha_age + ..., sigma_alpha)
+  for (n in 1:N)
+    y[n] ~ bernoulli_logit(gamma_adj[question[n]] * (alpha_adj[participant[n]] - beta_adj[question[n]]));
+}
+
+generated quantities{
+  vector[P] alpha_pred_raw;
+  vector[P] alpha_pred;
+
+
+  for (p in 1:P)
+    alpha_pred_raw[p] = alpha_state[postrat_state[p]] + alpha_age[postrat_age[p]] + alpha_ethnicity[postrat_ethnicity[p]] + alpha_educ[postrat_educ[p]] + beta_male*postrat_male[p];
+
+}
+
+```

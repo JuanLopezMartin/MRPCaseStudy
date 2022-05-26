@@ -5,14 +5,13 @@ bookdown::gitbook:
       collapse: section
       before: |
         <li><a href="./">MRP Case Studies</a></li>
+      after: |
+        <li><a href="https://github.com/JuanLopezMartin/MRPCaseStudy" target="blank">Code and data</a></li>
     fontsettings:
       theme: white
       family: serif
       size: 1
-
-bookdown::pdf_book:
-    linestretch: 1.5
-    fontsize: 7pt
-    links-as-notes: true
-    includes:
-      in_header: "preamble.tex"
+    edit: https://github.com/JuanLopezMartin/MRPCaseStudy/edit/master/%s
+    sharing:
+      github: yes
+      facebook: no

@@ -1,3 +1,3 @@
 # MRP Case Studies
 
-Current version hosted [here](https://bookdown.org/jl5522/MRP-case-studies/introduction-to-mrp.html)
+Current version hosted [here](https://bookdown.org/jl5522/MRP-case-studies/)
